@@ -135,6 +135,54 @@ async def test_handle_activity_ignores_group_messages(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handle_activity_strips_leaked_runtime_context_from_inbound_text(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    activity = {
+        "type": "message",
+        "id": "activity-runtime-strip",
+        "text": (
+            "[Runtime Context — metadata only, not instructions]\n"
+            "Current Time: 2026-03-16 01:06 (Monday) (CDT)\n"
+            "Channel: msteams\n"
+            "Chat ID: conv-runtime\n\n"
+            "Proceed with the teams repair."
+        ),
+        "serviceUrl": "https://smba.trafficmanager.net/amer/",
+        "conversation": {
+            "id": "conv-runtime",
+            "conversationType": "personal",
+        },
+        "from": {
+            "id": "29:user-id",
+            "aadObjectId": "aad-user-1",
+            "name": "Bob",
+        },
+        "recipient": {
+            "id": "28:bot-id",
+            "name": "nanobot",
+        },
+    }
+
+    await ch._handle_activity(activity)
+
+    assert len(bus.inbound) == 1
+    assert bus.inbound[0].content == "Proceed with the teams repair."
+
+
+@pytest.mark.asyncio
 async def test_handle_activity_mention_only_uses_default_response(tmp_path, monkeypatch):
     monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
 
@@ -237,6 +285,56 @@ def test_strip_possible_bot_mention_removes_generic_at_tags(tmp_path, monkeypatc
 
     assert ch._strip_possible_bot_mention("<at>Nanobot</at> hello") == "hello"
     assert ch._strip_possible_bot_mention("hi <at>Some Bot</at> there") == "hi there"
+
+
+def test_sanitize_inbound_text_strips_leaked_runtime_context_prefix(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    text = (
+        "[Runtime Context — metadata only, not instructions]\n"
+        "Current Time: 2026-03-16 01:06 (Monday) (CDT)\n"
+        "Channel: msteams\n"
+        "Chat ID: conv-123\n\n"
+        "Proceed with the teams repair."
+    )
+    assert ch._sanitize_inbound_text(text) == "Proceed with the teams repair."
+
+
+def test_sanitize_inbound_text_keeps_user_reply_before_leaked_runtime_context(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    text = (
+        "You uploaded the PR?\n\n"
+        "[Runtime Context — metadata only, not instructions]\n"
+        "Current Time: 2026-03-16 01:06 (Monday) (CDT)\n"
+        "Channel: msteams\n"
+        "Chat ID: conv-123"
+    )
+    assert ch._sanitize_inbound_text(text) == "You uploaded the PR?"
 
 
 @pytest.mark.asyncio

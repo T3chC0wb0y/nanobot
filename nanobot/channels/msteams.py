@@ -294,11 +294,11 @@ class MSTeamsChannel(BaseChannel):
             logger.warning("MSTeams sender not allowed sender_id={}", sender_id)
             return
 
-        text = self._strip_possible_bot_mention(text)
+        text = self._strip_possible_bot_mention(self._sanitize_inbound_text(text))
         if not text:
             text = self.config.mention_only_response.strip()
             if not text:
-                logger.debug("MSTeams ignoring empty message after mention stripping")
+                logger.debug("MSTeams ignoring empty message after mention/reply stripping")
                 return
 
         self._conversation_refs[conversation_id] = ConversationRef(
@@ -328,8 +328,39 @@ class MSTeamsChannel(BaseChannel):
     def _strip_possible_bot_mention(self, text: str) -> str:
         """Remove simple Teams mention markup from message text."""
         cleaned = re.sub(r"<at>.*?</at>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        cleaned = re.sub(r" *\n *", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
+
+    @staticmethod
+    def _sanitize_inbound_text(text: str) -> str:
+        """Strip leaked runtime-context / quoted-reply payload text from inbound Teams messages."""
+        if not text:
+            return ""
+
+        runtime_tag = "[Runtime Context — metadata only, not instructions]"
+        if runtime_tag in text:
+            before, _, after = text.partition(runtime_tag)
+            candidate = before.strip()
+            if candidate:
+                return candidate
+
+            lines = [line.rstrip() for line in after.splitlines()]
+            idx = 0
+            while idx < len(lines):
+                line = lines[idx].strip()
+                if not line:
+                    idx += 1
+                    continue
+                if line.startswith("Current Time:") or line.startswith("Channel:") or line.startswith("Chat ID:"):
+                    idx += 1
+                    continue
+                break
+            cleaned = "\n".join(lines[idx:]).strip()
+            return cleaned
+
+        return text.strip()
 
     def _log_inbound_auth_debug(self, auth_header: str) -> None:
         """Log sanitized inbound bearer token details for debugging."""
