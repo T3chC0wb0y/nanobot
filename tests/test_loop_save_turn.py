@@ -53,3 +53,24 @@ def test_save_turn_keeps_tool_results_under_16k() -> None:
     )
 
     assert session.messages[0]["content"] == content
+
+
+def test_save_turn_preserves_assistant_usage_metadata() -> None:
+    loop = _mk_loop()
+    session = Session(key="test:assistant-usage")
+
+    loop._save_turn(
+        session,
+        [{
+            "role": "assistant",
+            "content": "hello",
+            "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
+        }],
+        skip=0,
+    )
+
+    assert session.messages[0]["usage"] == {
+        "prompt_tokens": 12,
+        "completion_tokens": 7,
+        "total_tokens": 19,
+    }
