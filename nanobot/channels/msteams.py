@@ -335,13 +335,24 @@ class MSTeamsChannel(BaseChannel):
 
     @staticmethod
     def _sanitize_inbound_text(text: str) -> str:
-        """Strip leaked runtime-context / quoted-reply payload text from inbound Teams messages."""
+        """Strip leaked runtime-context / forwarded quote wrapper from inbound Teams messages."""
         if not text:
             return ""
 
+        cleaned = text.replace("\r\n", "\n").replace("\r", "\n").strip()
         runtime_tag = "[Runtime Context — metadata only, not instructions]"
-        if runtime_tag in text:
-            before, _, after = text.partition(runtime_tag)
+
+        if cleaned.startswith("FWDIOC-BOT"):
+            lines = cleaned.split("\n")
+            for idx, line in enumerate(lines):
+                if not line.strip():
+                    candidate = "\n".join(lines[idx + 1:]).strip()
+                    if candidate:
+                        cleaned = candidate
+                    break
+
+        if runtime_tag in cleaned:
+            before, _, after = cleaned.partition(runtime_tag)
             candidate = before.strip()
             if candidate:
                 return candidate
@@ -358,9 +369,8 @@ class MSTeamsChannel(BaseChannel):
                     continue
                 break
             cleaned = "\n".join(lines[idx:]).strip()
-            return cleaned
 
-        return text.strip()
+        return cleaned.strip()
 
     def _log_inbound_auth_debug(self, auth_header: str) -> None:
         """Log sanitized inbound bearer token details for debugging."""

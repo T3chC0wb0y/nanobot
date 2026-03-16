@@ -183,6 +183,48 @@ async def test_handle_activity_strips_leaked_runtime_context_from_inbound_text(t
 
 
 @pytest.mark.asyncio
+async def test_handle_activity_strips_forwarded_quote_wrapper_from_inbound_text(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    activity = {
+        "type": "message",
+        "id": "activity-forwarded-strip",
+        "text": "FWDIOC-BOT\r\nok\r\n\r\nThis is the quote with reply message",
+        "serviceUrl": "https://smba.trafficmanager.net/amer/",
+        "conversation": {
+            "id": "conv-forwarded",
+            "conversationType": "personal",
+        },
+        "from": {
+            "id": "29:user-id",
+            "aadObjectId": "aad-user-1",
+            "name": "Bob",
+        },
+        "recipient": {
+            "id": "28:bot-id",
+            "name": "nanobot",
+        },
+    }
+
+    await ch._handle_activity(activity)
+
+    assert len(bus.inbound) == 1
+    assert bus.inbound[0].content == "This is the quote with reply message"
+
+
+@pytest.mark.asyncio
 async def test_handle_activity_mention_only_uses_default_response(tmp_path, monkeypatch):
     monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
 
@@ -335,6 +377,25 @@ def test_sanitize_inbound_text_keeps_user_reply_before_leaked_runtime_context(tm
         "Chat ID: conv-123"
     )
     assert ch._sanitize_inbound_text(text) == "You uploaded the PR?"
+
+
+def test_sanitize_inbound_text_strips_forwarded_quote_wrapper_and_keeps_new_reply(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    text = "FWDIOC-BOT\r\nok\r\n\r\nThis is the quote with reply message"
+    assert ch._sanitize_inbound_text(text) == "This is the quote with reply message"
 
 
 @pytest.mark.asyncio
