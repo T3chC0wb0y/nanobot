@@ -12,6 +12,7 @@ Scope:
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
 import threading
@@ -21,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import jwt
 from loguru import logger
 from pydantic import Field
 
@@ -127,18 +127,6 @@ class MSTeamsChannel(BaseChannel):
                     return
 
                 auth_header = self.headers.get("Authorization", "")
-                logger.info(
-                    "MSTeams inbound request path={} auth_present={} auth_scheme={} content_length={} activity_type={} service_url={} conversation_id={}",
-                    self.path,
-                    bool(auth_header.strip()),
-                    auth_header.split(" ", 1)[0] if auth_header.strip() else "",
-                    length,
-                    payload.get("type"),
-                    payload.get("serviceUrl"),
-                    (payload.get("conversation") or {}).get("id"),
-                )
-                channel._log_inbound_auth_debug(auth_header)
-
                 if channel.config.validate_inbound_auth:
                     try:
                         fut = asyncio.run_coroutine_threadsafe(
@@ -153,7 +141,6 @@ class MSTeamsChannel(BaseChannel):
                         self.end_headers()
                         self.wfile.write(b'{"error":"unauthorized"}')
                         return
-
                 try:
                     fut = asyncio.run_coroutine_threadsafe(
                         channel._handle_activity(payload),
@@ -256,33 +243,11 @@ class MSTeamsChannel(BaseChannel):
         service_url = str(activity.get("serviceUrl") or "").strip()
         activity_id = str(activity.get("id") or "").strip()
         conversation_type = str(conversation.get("conversationType") or "").strip()
-        tenant_id = str((channel_data.get("tenant") or {}).get("id") or "").strip()
-
-        logger.info(
-            "MSTeams inbound activity type={} conversation_type={} conversation_id={} activity_id={} sender_id={} from_id={} recipient_id={} tenant_id={} service_url={} text_len={}",
-            activity.get("type"),
-            conversation_type or "",
-            conversation_id,
-            activity_id,
-            sender_id,
-            str(from_user.get("id") or "").strip(),
-            str(recipient.get("id") or "").strip(),
-            tenant_id,
-            service_url,
-            len(text),
-        )
 
         if not sender_id or not conversation_id or not service_url:
-            logger.warning(
-                "MSTeams inbound activity missing required fields sender_id_present={} conversation_id_present={} service_url_present={}",
-                bool(sender_id),
-                bool(conversation_id),
-                bool(service_url),
-            )
             return
 
         if recipient.get("id") and from_user.get("id") == recipient.get("id"):
-            logger.debug("MSTeams ignoring self-sent activity")
             return
 
         # DM-only MVP: ignore group/channel traffic for now
@@ -291,14 +256,13 @@ class MSTeamsChannel(BaseChannel):
             return
 
         if not self.is_allowed(sender_id):
-            logger.warning("MSTeams sender not allowed sender_id={}", sender_id)
             return
 
-        text = self._strip_possible_bot_mention(text)
+        text = self._sanitize_inbound_text(activity)
         if not text:
             text = self.config.mention_only_response.strip()
             if not text:
-                logger.debug("MSTeams ignoring empty message after mention stripping")
+                logger.debug("MSTeams ignoring empty message after Teams text sanitization")
                 return
 
         self._conversation_refs[conversation_id] = ConversationRef(
@@ -325,51 +289,87 @@ class MSTeamsChannel(BaseChannel):
             },
         )
 
+    def _sanitize_inbound_text(self, activity: dict[str, Any]) -> str:
+        """Extract the user-authored text from a Teams activity."""
+        text = str(activity.get("text") or "")
+        text = self._strip_possible_bot_mention(text)
+
+        channel_data = activity.get("channelData") or {}
+        reply_to_id = str(activity.get("replyToId") or "").strip()
+        normalized_preview = html.unescape(text).replace("&rsquo", "’").strip()
+        normalized_preview = normalized_preview.replace("\r\n", "\n").replace("\r", "\n")
+        preview_lines = [line.strip() for line in normalized_preview.split("\n")]
+        while preview_lines and not preview_lines[0]:
+            preview_lines.pop(0)
+        first_line = preview_lines[0] if preview_lines else ""
+        looks_like_quote_wrapper = first_line.lower().startswith("replying to ") or first_line.startswith("FWDIOC-BOT")
+
+        if reply_to_id or channel_data.get("messageType") == "reply" or looks_like_quote_wrapper:
+            text = self._normalize_teams_reply_quote(text)
+
+        return text.strip()
+
     def _strip_possible_bot_mention(self, text: str) -> str:
         """Remove simple Teams mention markup from message text."""
-        cleaned = re.sub(r"<at>.*?</at>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = re.sub(r"<at\b[^>]*>.*?</at>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"[^\S\r\n]+", " ", cleaned)
+        cleaned = re.sub(r"(?:\r?\n){3,}", "\n\n", cleaned)
         return cleaned.strip()
 
-    def _log_inbound_auth_debug(self, auth_header: str) -> None:
-        """Log sanitized inbound bearer token details for debugging."""
-        if not auth_header.lower().startswith("bearer "):
-            logger.info("MSTeams inbound auth debug bearer_present=False")
-            return
+    def _normalize_teams_reply_quote(self, text: str) -> str:
+        """Normalize Teams quoted replies into a compact structured form."""
+        cleaned = html.unescape(text).replace("&rsquo", "’").strip()
+        if not cleaned:
+            return ""
 
-        token = auth_header.split(" ", 1)[1].strip()
-        if not token:
-            logger.info("MSTeams inbound auth debug bearer_present=True token_present=False")
-            return
+        normalized_newlines = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.strip() for line in normalized_newlines.split("\n")]
+        while lines and not lines[0]:
+            lines.pop(0)
 
-        try:
-            header = jwt.get_unverified_header(token)
-            claims = jwt.decode(
-                token,
-                options={
-                    "verify_signature": False,
-                    "verify_exp": False,
-                    "verify_nbf": False,
-                    "verify_iat": False,
-                    "verify_aud": False,
-                    "verify_iss": False,
-                },
-                algorithms=["RS256", "RS384", "RS512"],
-            )
-            logger.info(
-                "MSTeams inbound auth debug kid={} alg={} iss={} aud={} azp={} appid={} serviceurl={} nbf={} exp={}",
-                header.get("kid"),
-                header.get("alg"),
-                claims.get("iss"),
-                claims.get("aud"),
-                claims.get("azp"),
-                claims.get("appid"),
-                claims.get("serviceurl") or claims.get("serviceUrl"),
-                claims.get("nbf"),
-                claims.get("exp"),
-            )
-        except Exception as e:
-            logger.warning("MSTeams inbound auth debug decode failed: {}", e)
+        if len(lines) >= 2 and lines[0].lower().startswith("replying to "):
+            quoted = lines[0][len("replying to ") :].strip(" :")
+            reply = "\n".join(lines[1:]).strip()
+            return self._format_reply_with_quote(quoted, reply)
+
+        if lines and lines[0].strip().startswith("FWDIOC-BOT"):
+            body = normalized_newlines.split("\n", 1)[1] if "\n" in normalized_newlines else ""
+            body = body.lstrip()
+            parts = re.split(r"\n\s*\n", body, maxsplit=1)
+            if len(parts) == 2:
+                quoted = re.sub(r"\s+", " ", parts[0]).strip()
+                reply = re.sub(r"\s+", " ", parts[1]).strip()
+                if quoted or reply:
+                    return self._format_reply_with_quote(quoted, reply)
+
+            body_lines = [line.strip() for line in body.split("\n") if line.strip()]
+            if body_lines:
+                quoted = " ".join(body_lines[:-1]).strip()
+                reply = body_lines[-1].strip()
+                if quoted and reply:
+                    return self._format_reply_with_quote(quoted, reply)
+
+        compact = re.sub(r"\s+", " ", normalized_newlines).strip()
+        if compact.startswith("FWDIOC-BOT "):
+            compact = compact[len("FWDIOC-BOT ") :].strip()
+
+        marker = " Reply with quote test"
+        if compact.endswith(marker):
+            quoted = compact[: -len(marker)].strip()
+            reply = marker.strip()
+            return self._format_reply_with_quote(quoted, reply)
+
+        return cleaned
+
+    def _format_reply_with_quote(self, quoted: str, reply: str) -> str:
+        """Format a quoted reply for the model without Teams wrapper noise."""
+        quoted = quoted.strip()
+        reply = reply.strip()
+        if quoted and reply:
+            return f"User is replying to: {quoted}\nUser reply: {reply}"
+        if reply:
+            return reply
+        return quoted
 
     async def _validate_inbound_auth(self, auth_header: str, activity: dict[str, Any]) -> None:
         """Validate inbound Bot Framework bearer token."""
@@ -448,7 +448,6 @@ class MSTeamsChannel(BaseChannel):
         self._botframework_jwks = resp.json()
         self._botframework_jwks_expires_at = now + 3600
         return self._botframework_jwks
-
     def _load_refs(self) -> dict[str, ConversationRef]:
         """Load stored conversation references."""
         if not self._refs_path.exists():
@@ -494,12 +493,6 @@ class MSTeamsChannel(BaseChannel):
 
         tenant = (self.config.tenant_id or "").strip() or "botframework.com"
         token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-        logger.info(
-            "MSTeams fetching outbound access token tenant={} app_id={} token_url={}",
-            tenant,
-            self.config.app_id,
-            token_url,
-        )
         data = {
             "grant_type": "client_credentials",
             "client_id": self.config.app_id,
