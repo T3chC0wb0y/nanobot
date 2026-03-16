@@ -1489,11 +1489,20 @@ This repository includes a built-in `msteams` channel MVP for Microsoft Teams di
       "port": 3978,
       "path": "/api/messages",
       "allowFrom": ["*"],
-      "replyInThread": true
+      "replyInThread": true,
+      "mentionOnlyResponse": "Hi — what can I help with?"
     }
   }
 }
 ```
+
+### Behavior notes
+
+- `replyInThread: true` replies to the triggering Teams activity when a stored `activity_id` is available.
+- `replyInThread: false` posts replies as normal conversation messages.
+- If `replyInThread` is enabled but no `activity_id` is stored, Nanobot falls back to a normal conversation message.
+- `mentionOnlyResponse` controls what Nanobot receives when a user sends only a bot mention such as `<at>Nanobot</at>`.
+- Set `mentionOnlyResponse` to an empty string to ignore mention-only messages.
 
 ### Setup notes
 

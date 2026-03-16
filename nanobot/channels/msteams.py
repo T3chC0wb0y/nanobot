@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +42,7 @@ class MSTeamsConfig(Base):
     path: str = "/api/messages"
     allow_from: list[str] = Field(default_factory=list)
     reply_in_thread: bool = True
+    mention_only_response: str = "Hi — what can I help with?"
 
 
 @dataclass
@@ -170,7 +172,13 @@ class MSTeamsChannel(BaseChannel):
             return
 
         token = await self._get_access_token()
-        url = f"{ref.service_url.rstrip('/')}/v3/conversations/{ref.conversation_id}/activities"
+        base_url = f"{ref.service_url.rstrip('/')}/v3/conversations/{ref.conversation_id}/activities"
+        use_thread_reply = self.config.reply_in_thread and bool(ref.activity_id)
+        url = (
+            f"{base_url}/{ref.activity_id}"
+            if use_thread_reply
+            else base_url
+        )
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -179,6 +187,8 @@ class MSTeamsChannel(BaseChannel):
             "type": "message",
             "text": msg.content or " ",
         }
+        if use_thread_reply:
+            payload["replyToId"] = ref.activity_id
 
         try:
             resp = await self._http.post(url, headers=headers, json=payload)
@@ -219,6 +229,11 @@ class MSTeamsChannel(BaseChannel):
             return
 
         text = self._strip_possible_bot_mention(text)
+        if not text:
+            text = self.config.mention_only_response.strip()
+            if not text:
+                logger.debug("MSTeams ignoring empty message after mention stripping")
+                return
 
         self._conversation_refs[conversation_id] = ConversationRef(
             service_url=service_url,
@@ -245,8 +260,10 @@ class MSTeamsChannel(BaseChannel):
         )
 
     def _strip_possible_bot_mention(self, text: str) -> str:
-        """Very small MVP cleanup for Teams mention markup."""
-        return text.replace("<at>nanobot</at>", "").strip()
+        """Remove simple Teams mention markup from message text."""
+        cleaned = re.sub(r"<at>.*?</at>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned.strip()
 
     def _load_refs(self) -> dict[str, ConversationRef]:
         """Load stored conversation references."""
