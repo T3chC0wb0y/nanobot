@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import jwt
 from loguru import logger
 from pydantic import Field
 
@@ -122,6 +123,7 @@ class MSTeamsChannel(BaseChannel):
                     payload.get("serviceUrl"),
                     (payload.get("conversation") or {}).get("id"),
                 )
+                channel._log_inbound_auth_debug(auth_header)
 
                 try:
                     fut = asyncio.run_coroutine_threadsafe(
@@ -299,6 +301,46 @@ class MSTeamsChannel(BaseChannel):
         cleaned = re.sub(r"<at>.*?</at>", " ", text, flags=re.IGNORECASE | re.DOTALL)
         cleaned = re.sub(r"\s+", " ", cleaned)
         return cleaned.strip()
+
+    def _log_inbound_auth_debug(self, auth_header: str) -> None:
+        """Log sanitized inbound bearer token details for debugging."""
+        if not auth_header.lower().startswith("bearer "):
+            logger.info("MSTeams inbound auth debug bearer_present=False")
+            return
+
+        token = auth_header.split(" ", 1)[1].strip()
+        if not token:
+            logger.info("MSTeams inbound auth debug bearer_present=True token_present=False")
+            return
+
+        try:
+            header = jwt.get_unverified_header(token)
+            claims = jwt.decode(
+                token,
+                options={
+                    "verify_signature": False,
+                    "verify_exp": False,
+                    "verify_nbf": False,
+                    "verify_iat": False,
+                    "verify_aud": False,
+                    "verify_iss": False,
+                },
+                algorithms=["RS256", "RS384", "RS512"],
+            )
+            logger.info(
+                "MSTeams inbound auth debug kid={} alg={} iss={} aud={} azp={} appid={} serviceurl={} nbf={} exp={}",
+                header.get("kid"),
+                header.get("alg"),
+                claims.get("iss"),
+                claims.get("aud"),
+                claims.get("azp"),
+                claims.get("appid"),
+                claims.get("serviceurl") or claims.get("serviceUrl"),
+                claims.get("nbf"),
+                claims.get("exp"),
+            )
+        except Exception as e:
+            logger.warning("MSTeams inbound auth debug decode failed: {}", e)
 
     def _load_refs(self) -> dict[str, ConversationRef]:
         """Load stored conversation references."""
