@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from nanobot.channels.msteams import MSTeamsChannel
+from nanobot.bus.events import OutboundMessage
+from nanobot.channels.msteams import ConversationRef, MSTeamsChannel
 
 
 class DummyBus:
@@ -132,6 +133,111 @@ async def test_handle_activity_ignores_group_messages(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handle_activity_mention_only_uses_default_response(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    activity = {
+        "type": "message",
+        "id": "activity-3",
+        "text": "<at>Nanobot</at>",
+        "serviceUrl": "https://smba.trafficmanager.net/amer/",
+        "conversation": {
+            "id": "conv-empty",
+            "conversationType": "personal",
+        },
+        "from": {
+            "id": "29:user-id",
+            "aadObjectId": "aad-user-1",
+            "name": "Bob",
+        },
+        "recipient": {
+            "id": "28:bot-id",
+            "name": "nanobot",
+        },
+    }
+
+    await ch._handle_activity(activity)
+
+    assert len(bus.inbound) == 1
+    assert bus.inbound[0].content == "Hi — what can I help with?"
+    assert "conv-empty" in ch._conversation_refs
+
+
+@pytest.mark.asyncio
+async def test_handle_activity_mention_only_ignores_when_response_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+            "mentionOnlyResponse": "   ",
+        },
+        bus,
+    )
+
+    activity = {
+        "type": "message",
+        "id": "activity-4",
+        "text": "<at>Nanobot</at>",
+        "serviceUrl": "https://smba.trafficmanager.net/amer/",
+        "conversation": {
+            "id": "conv-empty-disabled",
+            "conversationType": "personal",
+        },
+        "from": {
+            "id": "29:user-id",
+            "aadObjectId": "aad-user-1",
+            "name": "Bob",
+        },
+        "recipient": {
+            "id": "28:bot-id",
+            "name": "nanobot",
+        },
+    }
+
+    await ch._handle_activity(activity)
+
+    assert bus.inbound == []
+    assert ch._conversation_refs == {}
+
+
+def test_strip_possible_bot_mention_removes_generic_at_tags(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+        },
+        bus,
+    )
+
+    assert ch._strip_possible_bot_mention("<at>Nanobot</at> hello") == "hello"
+    assert ch._strip_possible_bot_mention("hi <at>Some Bot</at> there") == "hi there"
+
+
+@pytest.mark.asyncio
 async def test_get_access_token_uses_configured_tenant(tmp_path, monkeypatch):
     monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
 
@@ -159,3 +265,114 @@ async def test_get_access_token_uses_configured_tenant(tmp_path, monkeypatch):
     assert kwargs["data"]["client_id"] == "app-id"
     assert kwargs["data"]["client_secret"] == "secret"
     assert kwargs["data"]["scope"] == "https://api.botframework.com/.default"
+
+
+@pytest.mark.asyncio
+async def test_send_replies_to_activity_when_reply_in_thread_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+            "replyInThread": True,
+        },
+        bus,
+    )
+
+    fake_http = FakeHttpClient()
+    ch._http = fake_http
+    ch._token = "tok"
+    ch._token_expires_at = 9999999999
+    ch._conversation_refs["conv-123"] = ConversationRef(
+        service_url="https://smba.trafficmanager.net/amer/",
+        conversation_id="conv-123",
+        activity_id="activity-1",
+    )
+
+    await ch.send(OutboundMessage(channel="msteams", chat_id="conv-123", content="Reply text"))
+
+    assert len(fake_http.calls) == 1
+    url, kwargs = fake_http.calls[0]
+    assert url == "https://smba.trafficmanager.net/amer/v3/conversations/conv-123/activities/activity-1"
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert kwargs["json"]["text"] == "Reply text"
+    assert kwargs["json"]["replyToId"] == "activity-1"
+
+
+@pytest.mark.asyncio
+async def test_send_posts_to_conversation_when_thread_reply_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+            "replyInThread": False,
+        },
+        bus,
+    )
+
+    fake_http = FakeHttpClient()
+    ch._http = fake_http
+    ch._token = "tok"
+    ch._token_expires_at = 9999999999
+    ch._conversation_refs["conv-123"] = ConversationRef(
+        service_url="https://smba.trafficmanager.net/amer/",
+        conversation_id="conv-123",
+        activity_id="activity-1",
+    )
+
+    await ch.send(OutboundMessage(channel="msteams", chat_id="conv-123", content="Reply text"))
+
+    assert len(fake_http.calls) == 1
+    url, kwargs = fake_http.calls[0]
+    assert url == "https://smba.trafficmanager.net/amer/v3/conversations/conv-123/activities"
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert kwargs["json"]["text"] == "Reply text"
+    assert "replyToId" not in kwargs["json"]
+
+
+@pytest.mark.asyncio
+async def test_send_posts_to_conversation_when_thread_reply_enabled_but_no_activity_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+            "replyInThread": True,
+        },
+        bus,
+    )
+
+    fake_http = FakeHttpClient()
+    ch._http = fake_http
+    ch._token = "tok"
+    ch._token_expires_at = 9999999999
+    ch._conversation_refs["conv-123"] = ConversationRef(
+        service_url="https://smba.trafficmanager.net/amer/",
+        conversation_id="conv-123",
+        activity_id=None,
+    )
+
+    await ch.send(OutboundMessage(channel="msteams", chat_id="conv-123", content="Reply text"))
+
+    assert len(fake_http.calls) == 1
+    url, kwargs = fake_http.calls[0]
+    assert url == "https://smba.trafficmanager.net/amer/v3/conversations/conv-123/activities"
+    assert kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert kwargs["json"]["text"] == "Reply text"
+    assert "replyToId" not in kwargs["json"]
