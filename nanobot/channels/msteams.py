@@ -111,6 +111,18 @@ class MSTeamsChannel(BaseChannel):
                     self.end_headers()
                     return
 
+                auth_header = self.headers.get("Authorization", "")
+                logger.info(
+                    "MSTeams inbound request path={} auth_present={} auth_scheme={} content_length={} activity_type={} service_url={} conversation_id={}",
+                    self.path,
+                    bool(auth_header.strip()),
+                    auth_header.split(" ", 1)[0] if auth_header.strip() else "",
+                    length,
+                    payload.get("type"),
+                    payload.get("serviceUrl"),
+                    (payload.get("conversation") or {}).get("id"),
+                )
+
                 try:
                     fut = asyncio.run_coroutine_threadsafe(
                         channel._handle_activity(payload),
@@ -213,11 +225,33 @@ class MSTeamsChannel(BaseChannel):
         service_url = str(activity.get("serviceUrl") or "").strip()
         activity_id = str(activity.get("id") or "").strip()
         conversation_type = str(conversation.get("conversationType") or "").strip()
+        tenant_id = str((channel_data.get("tenant") or {}).get("id") or "").strip()
+
+        logger.info(
+            "MSTeams inbound activity type={} conversation_type={} conversation_id={} activity_id={} sender_id={} from_id={} recipient_id={} tenant_id={} service_url={} text_len={}",
+            activity.get("type"),
+            conversation_type or "",
+            conversation_id,
+            activity_id,
+            sender_id,
+            str(from_user.get("id") or "").strip(),
+            str(recipient.get("id") or "").strip(),
+            tenant_id,
+            service_url,
+            len(text),
+        )
 
         if not sender_id or not conversation_id or not service_url:
+            logger.warning(
+                "MSTeams inbound activity missing required fields sender_id_present={} conversation_id_present={} service_url_present={}",
+                bool(sender_id),
+                bool(conversation_id),
+                bool(service_url),
+            )
             return
 
         if recipient.get("id") and from_user.get("id") == recipient.get("id"):
+            logger.debug("MSTeams ignoring self-sent activity")
             return
 
         # DM-only MVP: ignore group/channel traffic for now
@@ -226,6 +260,7 @@ class MSTeamsChannel(BaseChannel):
             return
 
         if not self.is_allowed(sender_id):
+            logger.warning("MSTeams sender not allowed sender_id={}", sender_id)
             return
 
         text = self._strip_possible_bot_mention(text)
@@ -310,6 +345,12 @@ class MSTeamsChannel(BaseChannel):
 
         tenant = (self.config.tenant_id or "").strip() or "botframework.com"
         token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+        logger.info(
+            "MSTeams fetching outbound access token tenant={} app_id={} token_url={}",
+            tenant,
+            self.config.app_id,
+            token_url,
+        )
         data = {
             "grant_type": "client_credentials",
             "client_id": self.config.app_id,
