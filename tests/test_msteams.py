@@ -1,6 +1,9 @@
 import json
+import time
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.channels.msteams import ConversationRef, MSTeamsChannel
@@ -26,13 +29,41 @@ class FakeResponse:
 
 
 class FakeHttpClient:
-    def __init__(self, payload=None):
+    def __init__(self, payload=None, get_payloads=None):
         self.payload = payload or {"access_token": "tok", "expires_in": 3600}
+        self.get_payloads = get_payloads or {}
         self.calls = []
+        self.get_calls = []
 
     async def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return FakeResponse(self.payload)
+
+    async def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
+        return FakeResponse(self.get_payloads[url])
+
+
+def make_test_jwk_and_token(app_id: str, service_url: str = "https://smba.trafficmanager.net/amer/"):
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    jwk_json = jwt.algorithms.RSAAlgorithm.to_jwk(public_key)
+    jwk = json.loads(jwk_json)
+    jwk["kid"] = "test-kid"
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "iss": "https://api.botframework.com",
+            "aud": app_id,
+            "iat": now,
+            "exp": now + 3600,
+            "serviceurl": service_url,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-kid"},
+    )
+    return jwk, token
 
 
 @pytest.mark.asyncio
@@ -235,6 +266,108 @@ def test_strip_possible_bot_mention_removes_generic_at_tags(tmp_path, monkeypatc
 
     assert ch._strip_possible_bot_mention("<at>Nanobot</at> hello") == "hello"
     assert ch._strip_possible_bot_mention("hi <at>Some Bot</at> there") == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_validate_request_accepts_valid_bearer_token(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+            "validateInboundAuth": True,
+        },
+        bus,
+    )
+
+    jwk, token = make_test_jwk_and_token("app-id")
+    ch._http = FakeHttpClient(
+        get_payloads={
+            "https://login.botframework.com/v1/.well-known/openidconfiguration": {
+                "issuer": "https://api.botframework.com",
+                "jwks_uri": "https://login.botframework.com/v1/.well-known/keys",
+            },
+            "https://login.botframework.com/v1/.well-known/keys": {
+                "keys": [jwk],
+            },
+        }
+    )
+
+    ok = await ch._validate_request(
+        {"serviceUrl": "https://smba.trafficmanager.net/amer/"},
+        f"Bearer {token}",
+    )
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_validate_request_rejects_missing_bearer_token(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+            "validateInboundAuth": True,
+        },
+        bus,
+    )
+
+    ch._http = FakeHttpClient()
+    ok = await ch._validate_request(
+        {"serviceUrl": "https://smba.trafficmanager.net/amer/"},
+        "",
+    )
+
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_validate_request_rejects_service_url_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr("nanobot.channels.msteams.get_workspace_path", lambda: tmp_path)
+
+    bus = DummyBus()
+    ch = MSTeamsChannel(
+        {
+            "enabled": True,
+            "appId": "app-id",
+            "appPassword": "secret",
+            "tenantId": "tenant-id",
+            "allowFrom": ["*"],
+            "validateInboundAuth": True,
+        },
+        bus,
+    )
+
+    jwk, token = make_test_jwk_and_token("app-id", service_url="https://smba.trafficmanager.net/emea/")
+    ch._http = FakeHttpClient(
+        get_payloads={
+            "https://login.botframework.com/v1/.well-known/openidconfiguration": {
+                "issuer": "https://api.botframework.com",
+                "jwks_uri": "https://login.botframework.com/v1/.well-known/keys",
+            },
+            "https://login.botframework.com/v1/.well-known/keys": {
+                "keys": [jwk],
+            },
+        }
+    )
+
+    ok = await ch._validate_request(
+        {"serviceUrl": "https://smba.trafficmanager.net/amer/"},
+        f"Bearer {token}",
+    )
+
+    assert ok is False
 
 
 @pytest.mark.asyncio

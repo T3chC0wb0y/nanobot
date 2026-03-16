@@ -14,12 +14,14 @@ import asyncio
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 import httpx
+import jwt
 from loguru import logger
 from pydantic import Field
 
@@ -43,6 +45,7 @@ class MSTeamsConfig(Base):
     allow_from: list[str] = Field(default_factory=list)
     reply_in_thread: bool = True
     mention_only_response: str = "Hi — what can I help with?"
+    validate_inbound_auth: bool = True
 
 
 @dataclass
@@ -78,6 +81,10 @@ class MSTeamsChannel(BaseChannel):
         self._http: httpx.AsyncClient | None = None
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        self._openid_config: dict[str, Any] | None = None
+        self._openid_config_expires_at: float = 0.0
+        self._jwks: dict[str, Any] | None = None
+        self._jwks_expires_at: float = 0.0
         self._refs_path = get_workspace_path() / "state" / "msteams_conversations.json"
         self._refs_path.parent.mkdir(parents=True, exist_ok=True)
         self._conversation_refs: dict[str, ConversationRef] = self._load_refs()
@@ -112,6 +119,16 @@ class MSTeamsChannel(BaseChannel):
                     return
 
                 try:
+                    auth_header = self.headers.get("Authorization", "")
+                    fut = asyncio.run_coroutine_threadsafe(
+                        channel._validate_request(payload, auth_header),
+                        channel._loop,
+                    )
+                    if not fut.result(timeout=15):
+                        self.send_response(401)
+                        self.end_headers()
+                        return
+
                     fut = asyncio.run_coroutine_threadsafe(
                         channel._handle_activity(payload),
                         channel._loop,
@@ -119,6 +136,9 @@ class MSTeamsChannel(BaseChannel):
                     fut.result(timeout=15)
                 except Exception as e:
                     logger.warning("MSTeams activity handling failed: {}", e)
+                    self.send_response(401)
+                    self.end_headers()
+                    return
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -264,6 +284,100 @@ class MSTeamsChannel(BaseChannel):
         cleaned = re.sub(r"<at>.*?</at>", " ", text, flags=re.IGNORECASE | re.DOTALL)
         cleaned = re.sub(r"\s+", " ", cleaned)
         return cleaned.strip()
+
+    async def _validate_request(self, activity: dict[str, Any], auth_header: str) -> bool:
+        """Validate inbound Bot Framework auth when enabled."""
+        if not self.config.validate_inbound_auth:
+            return True
+
+        if not auth_header.lower().startswith("bearer "):
+            logger.warning("MSTeams missing bearer auth header")
+            return False
+
+        token = auth_header.split(" ", 1)[1].strip()
+        if not token:
+            logger.warning("MSTeams empty bearer token")
+            return False
+
+        try:
+            unverified = jwt.get_unverified_header(token)
+            kid = unverified.get("kid")
+            if not kid:
+                logger.warning("MSTeams token missing kid")
+                return False
+
+            openid_config = await self._get_openid_config()
+            issuer = str(openid_config.get("issuer") or "").strip()
+            jwks = await self._get_jwks()
+            keys = jwks.get("keys") or []
+            jwk = next((key for key in keys if key.get("kid") == kid), None)
+            if not jwk:
+                logger.warning("MSTeams signing key not found for kid={}", kid)
+                return False
+
+            audience = self.config.app_id
+            service_url = str(activity.get("serviceUrl") or "").strip() or None
+            public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk))
+            jwt.decode(
+                token,
+                key=public_key,
+                algorithms=[jwk.get("alg", "RS256"), "RS256"],
+                audience=audience,
+                issuer=issuer,
+                options={"require": ["exp", "iat", "aud", "iss"]},
+            )
+
+            if service_url:
+                claims = jwt.decode(
+                    token,
+                    options={"verify_signature": False, "verify_exp": False, "verify_aud": False},
+                    algorithms=["RS256"],
+                )
+                token_service_url = str(claims.get("serviceurl") or claims.get("serviceUrl") or "").strip()
+                if token_service_url and token_service_url.rstrip("/") != service_url.rstrip("/"):
+                    logger.warning("MSTeams token serviceUrl mismatch")
+                    return False
+
+            return True
+        except Exception as e:
+            logger.warning("MSTeams auth validation failed: {}", e)
+            return False
+
+    async def _get_openid_config(self) -> dict[str, Any]:
+        """Fetch and cache Bot Framework OpenID configuration."""
+        now = time.time()
+        if self._openid_config and now < self._openid_config_expires_at:
+            return self._openid_config
+
+        if not self._http:
+            raise RuntimeError("MSTeams HTTP client not initialized")
+
+        url = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+        resp = await self._http.get(url)
+        resp.raise_for_status()
+        self._openid_config = resp.json()
+        self._openid_config_expires_at = now + 3600
+        return self._openid_config
+
+    async def _get_jwks(self) -> dict[str, Any]:
+        """Fetch and cache Bot Framework JWKS."""
+        now = time.time()
+        if self._jwks and now < self._jwks_expires_at:
+            return self._jwks
+
+        if not self._http:
+            raise RuntimeError("MSTeams HTTP client not initialized")
+
+        openid_config = await self._get_openid_config()
+        jwks_uri = str(openid_config.get("jwks_uri") or "").strip()
+        if not jwks_uri:
+            raise RuntimeError("MSTeams OpenID config missing jwks_uri")
+
+        resp = await self._http.get(jwks_uri)
+        resp.raise_for_status()
+        self._jwks = resp.json()
+        self._jwks_expires_at = now + 3600
+        return self._jwks
 
     def _load_refs(self) -> dict[str, ConversationRef]:
         """Load stored conversation references."""
