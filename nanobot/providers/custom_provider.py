@@ -51,9 +51,17 @@ class CustomProvider(LLMProvider):
             for tc in (msg.tool_calls or [])
         ]
         u = response.usage
+        cached_tokens = 0
+        if u and getattr(u, "prompt_tokens_details", None) is not None:
+            cached_tokens = getattr(u.prompt_tokens_details, "cached_tokens", 0) or 0
         return LLMResponse(
             content=msg.content, tool_calls=tool_calls, finish_reason=choice.finish_reason or "stop",
-            usage={"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens, "total_tokens": u.total_tokens} if u else {},
+            usage={
+                "prompt_tokens": u.prompt_tokens,
+                "completion_tokens": u.completion_tokens,
+                "total_tokens": u.total_tokens,
+                "cached_tokens": cached_tokens,
+            } if u else {},
             reasoning_content=getattr(msg, "reasoning_content", None) or None,
         )
 

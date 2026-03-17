@@ -99,7 +99,8 @@
 
 ## ✨ Features
 
-- Provider-reported token usage is preserved in session JSONL history when available (`prompt_tokens`, `completion_tokens`, `total_tokens`).
+- Provider-reported token usage is preserved in session JSONL history when available (`prompt_tokens`, `completion_tokens`, `total_tokens`, `cached_tokens`).
+- Optional end-of-turn token threshold notifications can alert users on any channel with a short message like `This turn used 12345 tokens (6789 cached). It may be time to start a new session with /new.`.
 
 <table align="center">
   <tr align="center">
@@ -761,6 +762,24 @@ Simply send the command above to your nanobot (via CLI or any chat channel), and
 ## ⚙️ Configuration
 
 Config file: `~/.nanobot/config.json`
+
+### Token threshold notifications
+
+You can optionally notify the user when a turn's aggregated provider-reported `total_tokens` meets or exceeds a threshold. The notification is sent through the same channel/chat as the triggering message and includes aggregated cached tokens when the provider reports them.
+
+```json
+{
+  "channels": {
+    "tokenNotifyThreshold": 50000,
+    "tokenNotifyMessage": "This turn used {total_tokens} tokens ({cached_tokens} cached). It may be time to start a new session with /new."
+  }
+}
+```
+
+Available template fields:
+- `{total_tokens}` — aggregated total tokens for the full turn
+- `{cached_tokens}` — aggregated cached prompt tokens for the full turn when reported, otherwise `0`
+- `{threshold}` — configured threshold value
 
 ### Providers
 

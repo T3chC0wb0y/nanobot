@@ -27,7 +27,12 @@ def _fake_response(content: str = "ok") -> SimpleNamespace:
         thinking_blocks=None,
     )
     choice = SimpleNamespace(message=message, finish_reason="stop")
-    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    usage = SimpleNamespace(
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=3),
+    )
     return SimpleNamespace(choices=[choice], usage=usage)
 
 

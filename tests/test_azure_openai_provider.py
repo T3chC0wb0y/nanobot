@@ -171,7 +171,8 @@ async def test_chat_success():
         "usage": {
             "prompt_tokens": 12,
             "completion_tokens": 18,
-            "total_tokens": 30
+            "total_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 5}
         }
     }
     
@@ -194,6 +195,7 @@ async def test_chat_success():
         assert result.usage["prompt_tokens"] == 12
         assert result.usage["completion_tokens"] == 18
         assert result.usage["total_tokens"] == 30
+        assert result.usage["cached_tokens"] == 5
         
         # Verify URL was built with the provided model as deployment name
         call_args = mock_context.post.call_args

@@ -179,6 +179,106 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
+    def _get_token_notify_threshold(self) -> int | None:
+        ch = self.channels_config
+        threshold = getattr(ch, "token_notify_threshold", None) if ch else None
+        return threshold if isinstance(threshold, int) and threshold > 0 else None
+
+    @staticmethod
+    def _aggregate_turn_usage(all_msgs: list[dict]) -> dict[str, int]:
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        cached_tokens = 0
+        found = False
+
+        for msg in all_msgs:
+            if msg.get("role") != "assistant":
+                continue
+            usage = msg.get("usage") or {}
+            if not isinstance(usage, dict):
+                continue
+
+            p = usage.get("prompt_tokens", 0)
+            c = usage.get("completion_tokens", 0)
+            t = usage.get("total_tokens", 0)
+            cached = usage.get("cached_tokens", 0)
+            if any(isinstance(v, int) and v > 0 for v in (p, c, t, cached)):
+                found = True
+            if isinstance(p, int):
+                prompt_tokens += p
+            if isinstance(c, int):
+                completion_tokens += c
+            if isinstance(t, int):
+                total_tokens += t
+            if isinstance(cached, int):
+                cached_tokens += cached
+
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cached_tokens": cached_tokens,
+        } if found else {}
+
+    def _format_token_notify_message(
+        self,
+        *,
+        total_tokens: int,
+        cached_tokens: int,
+        threshold: int,
+    ) -> str:
+        ch = self.channels_config
+        template = getattr(ch, "token_notify_message", None) if ch else None
+        if not isinstance(template, str) or not template.strip():
+            template = "This turn used {total_tokens} tokens ({cached_tokens} cached). It may be time to start a new session with /new."
+        try:
+            return template.format(
+                total_tokens=total_tokens,
+                cached_tokens=cached_tokens,
+                threshold=threshold,
+            )
+        except Exception:
+            return (
+                f"This turn used {total_tokens} tokens ({cached_tokens} cached). "
+                "It may be time to start a new session with /new."
+            )
+
+    def _should_append_token_usage_to_response(self) -> bool:
+        ch = self.channels_config
+        return bool(getattr(ch, "append_token_usage_to_response", False)) if ch else False
+
+    def _append_token_usage_to_response(self, content: str, usage: dict[str, int]) -> str:
+        total_tokens = usage.get("total_tokens", 0)
+        cached_tokens = usage.get("cached_tokens", 0)
+        return f"{content}\n\nThis turn used {total_tokens} tokens ({cached_tokens} cached)."
+
+    async def _maybe_notify_token_threshold(
+        self,
+        *,
+        msg: InboundMessage,
+        all_msgs: list[dict],
+    ) -> None:
+        threshold = self._get_token_notify_threshold()
+        if threshold is None:
+            return
+
+        usage = self._aggregate_turn_usage(all_msgs)
+        total_tokens = usage.get("total_tokens")
+        if not isinstance(total_tokens, int) or total_tokens < threshold:
+            return
+
+        await self.bus.publish_outbound(OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=self._format_token_notify_message(
+                total_tokens=total_tokens,
+                cached_tokens=usage.get("cached_tokens", 0),
+                threshold=threshold,
+            ),
+            metadata=msg.metadata or {},
+        ))
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
@@ -443,8 +543,17 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
+        usage = self._aggregate_turn_usage(all_msgs)
+        if self._should_append_token_usage_to_response() and isinstance(final_content, str) and final_content:
+            final_content = self._append_token_usage_to_response(final_content, usage)
+            for entry in reversed(all_msgs):
+                if entry.get("role") == "assistant" and not entry.get("tool_calls") and isinstance(entry.get("content"), str):
+                    entry["content"] = final_content
+                    break
+
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
+        await self._maybe_notify_token_threshold(msg=msg, all_msgs=all_msgs)
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
