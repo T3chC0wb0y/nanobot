@@ -109,6 +109,9 @@
 
 ## ✨ Features
 
+- Provider-reported token usage is preserved in session JSONL history when available (`prompt_tokens`, `completion_tokens`, `total_tokens`, `cached_tokens`).
+- Optional end-of-turn token threshold notifications can alert users on any channel with a short message like `This turn used 12345 tokens (6789 cached). It may be time to start a new session with /new.`.
+
 <table align="center">
   <tr align="center">
     <th><p align="center">📈 24/7 Real-Time Market Analysis</p></th>
@@ -844,6 +847,24 @@ Simply send the command above to your nanobot (via CLI or any chat channel), and
 ## ⚙️ Configuration
 
 Config file: `~/.nanobot/config.json`
+
+### Token threshold notifications
+
+You can optionally notify the user when a turn's aggregated provider-reported `total_tokens` meets or exceeds a threshold. The notification is sent through the same channel/chat as the triggering message and includes aggregated cached tokens when the provider reports them.
+
+```json
+{
+  "channels": {
+    "tokenNotifyThreshold": 50000,
+    "tokenNotifyMessage": "This turn used {total_tokens} tokens ({cached_tokens} cached). It may be time to start a new session with /new."
+  }
+}
+```
+
+Available template fields:
+- `{total_tokens}` — aggregated total tokens for the full turn
+- `{cached_tokens}` — aggregated cached prompt tokens for the full turn when reported, otherwise `0`
+- `{threshold}` — configured threshold value
 
 ### Providers
 
@@ -1636,3 +1657,73 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 <p align="center">
   <sub>nanobot is for educational, research, and technical exchange purposes only</sub>
 </p>
+
+
+## Microsoft Teams (MVP)
+
+This repository includes a built-in `msteams` channel MVP for Microsoft Teams direct messages.
+
+### Current scope
+
+- Direct-message text in/out
+- Tenant-aware OAuth token acquisition
+- Conversation reference persistence for replies
+- Public HTTPS webhook support through a tunnel or reverse proxy
+
+### Not yet included
+
+- Group/channel handling
+- Attachments and cards
+- Polls
+- Richer Teams activity handling
+
+### Example config
+
+```json
+{
+  "channels": {
+    "msteams": {
+      "enabled": true,
+      "appId": "YOUR_APP_ID",
+      "appPassword": "YOUR_APP_SECRET",
+      "tenantId": "YOUR_TENANT_ID",
+      "host": "0.0.0.0",
+      "port": 3978,
+      "path": "/api/messages",
+      "allowFrom": ["*"],
+      "replyInThread": true,
+      "mentionOnlyResponse": "Hi — what can I help with?",
+      "validateInboundAuth": false,
+      "restartNotifyEnabled": false,
+      "restartNotifyPreMessage": "Nanobot agent initiated a gateway restart. I will message again when the gateway is back online.",
+      "restartNotifyPostMessage": "Nanobot gateway is back online."
+    }
+  }
+}
+```
+
+### Behavior notes
+
+- `replyInThread: true` replies to the triggering Teams activity when a stored `activity_id` is available.
+- `replyInThread: false` posts replies as normal conversation messages.
+- If `replyInThread` is enabled but no `activity_id` is stored, Nanobot falls back to a normal conversation message.
+- `mentionOnlyResponse` controls what Nanobot receives when a user sends only a bot mention such as `<at>Nanobot</at>`.
+- Set `mentionOnlyResponse` to an empty string to ignore mention-only messages.
+- `validateInboundAuth: true` enables inbound Bot Framework bearer-token validation.
+- `validateInboundAuth: false` leaves inbound auth unenforced, which is safer while first validating a new relay, tunnel, or proxy path.
+- When enabled, Nanobot validates the inbound bearer token signature, issuer, audience, token lifetime, and `serviceUrl` claim when present.
+- `restartNotifyEnabled: true` enables optional Teams restart-notification configuration for external wrapper-script driven restarts.
+- `restartNotifyPreMessage` and `restartNotifyPostMessage` control the before/after announcement text used by that external wrapper.
+
+### Setup notes
+
+1. Create or reuse a Microsoft Teams / Azure bot app registration.
+2. Set the bot messaging endpoint to a public HTTPS URL ending in `/api/messages`.
+3. Forward that public endpoint to `http://localhost:3978/api/messages`.
+4. Start Nanobot with:
+
+```bash
+nanobot gateway
+```
+
+5. Optional: if you use an external restart wrapper (for example a script that stops and restarts the gateway), you can enable Teams restart announcements with `restartNotifyEnabled: true` and have the wrapper send `restartNotifyPreMessage` before restart and `restartNotifyPostMessage` after the gateway is back online.
