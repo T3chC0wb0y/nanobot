@@ -1517,8 +1517,8 @@ This repository includes a built-in `msteams` channel MVP for Microsoft Teams di
 - `validateInboundAuth: true` enables inbound Bot Framework bearer-token validation.
 - `validateInboundAuth: false` leaves inbound auth unenforced, which is safer while first validating a new relay, tunnel, or proxy path.
 - When enabled, Nanobot validates the inbound bearer token signature, issuer, audience, token lifetime, and `serviceUrl` claim when present.
-- `restartNotifyEnabled: true` enables optional Teams restart announcements for wrapper-script driven restarts.
-- `restartNotifyPreMessage` and `restartNotifyPostMessage` control the before/after restart announcement text.
+- `restartNotifyEnabled: true` enables optional Teams restart-notification configuration for external wrapper-script driven restarts.
+- `restartNotifyPreMessage` and `restartNotifyPostMessage` control the before/after announcement text used by that external wrapper.
 
 ### Setup notes
 
