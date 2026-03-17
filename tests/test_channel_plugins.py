@@ -80,6 +80,10 @@ def test_channels_config_builtin_fields_removed():
     assert not hasattr(cfg, "telegram")
     assert cfg.send_progress is True
     assert cfg.send_tool_hints is False
+    assert cfg.token_notify_threshold is None
+    assert cfg.append_token_usage_to_response is False
+    assert "{total_tokens}" in cfg.token_notify_message
+    assert "{cached_tokens}" in cfg.token_notify_message
 
 
 # ---------------------------------------------------------------------------
