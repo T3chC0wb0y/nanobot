@@ -25,6 +25,9 @@ class ChannelsConfig(Base):
 
     send_progress: bool = True  # stream agent's text progress to the channel
     send_tool_hints: bool = False  # stream tool-call hints (e.g. read_file("…"))
+    token_notify_threshold: int | None = None  # notify when provider total_tokens for a turn meets/exceeds this value
+    token_notify_message: str = "This turn used {total_tokens} tokens ({cached_tokens} cached). It may be time to start a new session with /new."
+    append_token_usage_to_response: bool = False  # append aggregated token usage to the end of each final reply
 
 
 class AgentDefaults(Base):

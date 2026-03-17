@@ -332,10 +332,15 @@ class LiteLLMProvider(LLMProvider):
 
         usage = {}
         if hasattr(response, "usage") and response.usage:
+            prompt_tokens_details = getattr(response.usage, "prompt_tokens_details", None)
+            cached_tokens = 0
+            if prompt_tokens_details is not None:
+                cached_tokens = getattr(prompt_tokens_details, "cached_tokens", 0) or 0
             usage = {
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
+                "cached_tokens": cached_tokens,
             }
 
         reasoning_content = getattr(message, "reasoning_content", None) or None
