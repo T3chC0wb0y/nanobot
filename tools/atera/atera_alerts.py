@@ -83,19 +83,19 @@ def collect_alerts():
     tickets = mod.gather_active(['Open', 'Pending'], 100)
     alerts = []
 
-    for t in tickets:
-        score, reasons = severity(t)
+    for ticket in tickets:
+        score, reasons = severity(ticket)
         if score < 3:
             continue
-        key = str(t.get('TicketID'))
-        ts = latest_ts(t)
-        wait = mod.waiting_on(t)
-        pr = (t.get('TicketPriority') or '').lower()
+        key = str(ticket.get('TicketID'))
+        ts = latest_ts(ticket)
+        wait = mod.waiting_on(ticket)
+        pr = (ticket.get('TicketPriority') or '').lower()
         if wait != 'us' and pr not in {'critical', 'high', 'urgent'}:
             continue
         if state.get(key) == ts:
             continue
-        alerts.append((score, t, reasons, ts))
+        alerts.append((score, ticket, reasons, ts))
         state[key] = ts
 
     save_state(state)
@@ -108,26 +108,26 @@ def render_text(alerts):
         return 'NO_REPLY'
 
     lines = ['Atera urgent check:']
-    for score, t, reasons, _ in alerts[:5]:
+    for score, ticket, reasons, _ in alerts[:5]:
         reason_text = ', '.join(reasons[:3]) if reasons else 'threshold'
         lines.append(
-            f"- #{t.get('TicketNumber') or t.get('TicketID')} | {t.get('TicketStatus')} | {t.get('CustomerName') or '-'} | {t.get('TicketTitle') or '-'} | score {score} | wait:{mod.waiting_on(t)} | reasons:{reason_text}"
+            f"- {mod.ticket_ref(ticket)} | {ticket.get('TicketStatus')} | {ticket.get('CustomerName') or '-'} | {ticket.get('TicketTitle') or '-'} | score {score} | wait:{mod.waiting_on(ticket)} | reasons:{reason_text}"
         )
     return '\n'.join(lines)
 
 
 def render_json(alerts):
     items = []
-    for score, t, reasons, ts in alerts[:5]:
+    for score, ticket, reasons, ts in alerts[:5]:
         items.append({
-            'ticket_id': t.get('TicketID'),
-            'ticket_number': t.get('TicketNumber') or t.get('TicketID'),
-            'status': t.get('TicketStatus'),
-            'priority': t.get('TicketPriority'),
-            'customer': t.get('CustomerName'),
-            'title': t.get('TicketTitle'),
+            'ticket_id': ticket.get('TicketID'),
+            'ticket_number': ticket.get('TicketNumber') or ticket.get('TicketID'),
+            'status': ticket.get('TicketStatus'),
+            'priority': ticket.get('TicketPriority'),
+            'customer': ticket.get('CustomerName'),
+            'title': ticket.get('TicketTitle'),
             'score': score,
-            'waiting_on': mod.waiting_on(t),
+            'waiting_on': mod.waiting_on(ticket),
             'reasons': reasons,
             'timestamp': ts,
         })

@@ -100,6 +100,25 @@ def ticket_text(ticket):
     return ' '.join(parts).lower()
 
 
+def t(ticket, field):
+    value = ticket.get(field)
+    if value is None:
+        return ''
+    return str(value)
+
+
+def ticket_ref(ticket):
+    ticket_number = t(ticket, 'TicketNumber')
+    ticket_id = t(ticket, 'TicketID')
+    if ticket_number and ticket_id and ticket_number != ticket_id:
+        return f'#{ticket_number} (id:{ticket_id})'
+    if ticket_number:
+        return f'#{ticket_number}'
+    if ticket_id:
+        return f'id:{ticket_id}'
+    return 'id:-'
+
+
 def sort_key_recent(ticket):
     for field in ('LastEndUserCommentTimestamp', 'LastTechnicianCommentTimestamp', 'TicketCreatedDate'):
         dt = parse_dt(ticket.get(field))
@@ -167,13 +186,13 @@ def fetch_tickets(status=None, page=1, items=25):
     return data.get('items') or [], data
 
 
-def print_ticket_line(t):
+def print_ticket_line(ticket):
     print(
-        f"#{t.get('TicketNumber') or t.get('TicketID')} | "
-        f"{t.get('TicketStatus')} | {t.get('TicketPriority')} | "
-        f"age {fmt_age(t.get('TicketCreatedDate'))} | "
-        f"wait:{waiting_on(t)} | next:{next_action(t)} | "
-        f"{t.get('CustomerName') or '-'} | {t.get('TicketTitle') or '-'}"
+        f"{ticket_ref(ticket)} | "
+        f"{ticket.get('TicketStatus')} | {ticket.get('TicketPriority')} | "
+        f"age {fmt_age(ticket.get('TicketCreatedDate'))} | "
+        f"wait:{waiting_on(ticket)} | next:{next_action(ticket)} | "
+        f"{ticket.get('CustomerName') or '-'} | {ticket.get('TicketTitle') or '-'}"
     )
 
 
@@ -197,11 +216,11 @@ def cmd_list(args):
 
     items = data.get('items') or []
     print(f"count={len(items)} total={data.get('totalItemCount')}")
-    for t in items[: args.limit]:
+    for ticket in items[: args.limit]:
         print(
-            f"#{t.get('TicketNumber') or t.get('TicketID')} | "
-            f"{t.get('TicketPriority')} | {t.get('TicketStatus')} | "
-            f"{t.get('CustomerName') or '-'} | {t.get('TicketTitle') or '-'}"
+            f"{ticket_ref(ticket)} | "
+            f"{ticket.get('TicketPriority')} | {ticket.get('TicketStatus')} | "
+            f"{ticket.get('CustomerName') or '-'} | {ticket.get('TicketTitle') or '-'}"
         )
     return 0 if status == 200 else 1
 
@@ -268,8 +287,8 @@ def cmd_triage(args):
     tickets.sort(key=sort_key_recent, reverse=True)
 
     print(f'triage_count={len(tickets)} statuses={statuses}')
-    for t in tickets[: args.limit]:
-        print_ticket_line(t)
+    for ticket in tickets[: args.limit]:
+        print_ticket_line(ticket)
     return 0
 
 
@@ -279,8 +298,8 @@ def cmd_high(args):
     tickets = [t for t in tickets if (t.get('TicketPriority') or '').lower() in {'high', 'urgent', 'critical'}]
     tickets.sort(key=sort_key_recent, reverse=True)
     print(f'high_count={len(tickets)} statuses={statuses}')
-    for t in tickets[: args.limit]:
-        print_ticket_line(t)
+    for ticket in tickets[: args.limit]:
+        print_ticket_line(ticket)
     return 0
 
 
@@ -289,16 +308,16 @@ def cmd_stale(args):
     tickets = gather_active(statuses, args.items)
     stale = []
     now = datetime.now(timezone.utc)
-    for t in tickets:
-        last_touch = sort_key_recent(t)
+    for ticket in tickets:
+        last_touch = sort_key_recent(ticket)
         age_days = (now - last_touch.astimezone(timezone.utc)).days
         if age_days >= args.days:
-            stale.append((age_days, t))
+            stale.append((age_days, ticket))
     stale.sort(key=lambda x: x[0], reverse=True)
     print(f'stale_count={len(stale)} threshold_days={args.days} statuses={statuses}')
-    for age_days, t in stale[: args.limit]:
+    for age_days, ticket in stale[: args.limit]:
         print(f'{age_days}d stale | ', end='')
-        print_ticket_line(t)
+        print_ticket_line(ticket)
     return 0
 
 
@@ -308,8 +327,8 @@ def cmd_needs_response(args):
     tickets = [t for t in tickets if waiting_on(t) == 'us']
     tickets.sort(key=sort_key_recent, reverse=True)
     print(f'needs_response_count={len(tickets)} statuses={statuses}')
-    for t in tickets[: args.limit]:
-        print_ticket_line(t)
+    for ticket in tickets[: args.limit]:
+        print_ticket_line(ticket)
     return 0
 
 
@@ -319,8 +338,8 @@ def cmd_pending_user(args):
     tickets = [t for t in tickets if waiting_on(t) == 'them']
     tickets.sort(key=sort_key_recent, reverse=True)
     print(f'pending_user_count={len(tickets)} statuses={statuses}')
-    for t in tickets[: args.limit]:
-        print_ticket_line(t)
+    for ticket in tickets[: args.limit]:
+        print_ticket_line(ticket)
     return 0
 
 
@@ -333,8 +352,8 @@ def cmd_action_queue(args):
         'waiting-on-user': [],
         'close-cleanup': [],
     }
-    for t in tickets:
-        buckets[action_bucket(t)].append(t)
+    for ticket in tickets:
+        buckets[action_bucket(ticket)].append(ticket)
 
     for name in buckets:
         buckets[name].sort(key=sort_key_recent, reverse=True)
@@ -342,14 +361,17 @@ def cmd_action_queue(args):
     order = ['reply-now', 'needs-session', 'waiting-on-user', 'close-cleanup']
     for name in order:
         print(f'[{name}] count={len(buckets[name])}')
-        for t in buckets[name][: args.limit_per_bucket]:
-            print_ticket_line(t)
+        for ticket in buckets[name][: args.limit_per_bucket]:
+            print_ticket_line(ticket)
         print()
     return 0
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description='Atera ticket helper')
+    p = argparse.ArgumentParser(
+        description='Atera ticket helper',
+        epilog='Queue views print TicketNumber and TicketID together when both are present. Detail, comments, update, and comment-add require TicketID.',
+    )
     sub = p.add_subparsers(dest='cmd', required=True)
 
     p_list = sub.add_parser('list', help='List tickets')
@@ -360,23 +382,23 @@ def build_parser():
     p_list.add_argument('--raw', action='store_true')
     p_list.set_defaults(func=cmd_list)
 
-    p_get = sub.add_parser('get', help='Get ticket by ID')
-    p_get.add_argument('ticket_id', type=int)
+    p_get = sub.add_parser('get', help='Get ticket by TicketID')
+    p_get.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_get.set_defaults(func=cmd_get)
 
-    p_comments = sub.add_parser('comments', help='List comments for a ticket')
-    p_comments.add_argument('ticket_id', type=int)
+    p_comments = sub.add_parser('comments', help='List comments for a ticket by TicketID')
+    p_comments.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_comments.add_argument('--page', type=int, default=1)
     p_comments.add_argument('--items', type=int, default=25)
     p_comments.set_defaults(func=cmd_comments)
 
-    p_comment_add = sub.add_parser('comment-add', help='Add comment to a ticket')
-    p_comment_add.add_argument('ticket_id', type=int)
+    p_comment_add = sub.add_parser('comment-add', help='Add comment to a ticket by TicketID')
+    p_comment_add.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_comment_add.add_argument('text')
     p_comment_add.set_defaults(func=cmd_comment_add)
 
-    p_update = sub.add_parser('update', help='Update a ticket')
-    p_update.add_argument('ticket_id', type=int)
+    p_update = sub.add_parser('update', help='Update a ticket by TicketID')
+    p_update.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_update.add_argument('--title')
     p_update.add_argument('--status')
     p_update.add_argument('--priority')
