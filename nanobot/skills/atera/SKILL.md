@@ -48,22 +48,22 @@ Bucket tickets by next action:
 python3 tools/atera/atera_tickets.py action-queue --statuses Open,Pending --items 50 --limit-per-bucket 5
 ```
 
-Get one ticket:
+Get one ticket by `TicketID`:
 ```bash
 python3 tools/atera/atera_tickets.py get <ticket_id>
 ```
 
-List comments:
+List comments by `TicketID`:
 ```bash
 python3 tools/atera/atera_tickets.py comments <ticket_id> --page 1 --items 25
 ```
 
-Add a comment:
+Add a comment by `TicketID`:
 ```bash
 python3 tools/atera/atera_tickets.py comment-add <ticket_id> "text"
 ```
 
-Update a ticket:
+Update a ticket by `TicketID`:
 ```bash
 python3 tools/atera/atera_tickets.py update <ticket_id> --status Pending --priority High
 ```
@@ -86,6 +86,8 @@ python3 tools/atera/atera_gate.py
 ## Guidance
 
 - Prefer read-only commands first when validating connectivity.
+- Queue views print `TicketNumber` and `TicketID` together when both are present, for example `#12345 (id:67890)`.
+- Use `TicketID` for `get`, `comments`, `comment-add`, and `update`.
 - Use `waiting_on()`-based views instead of status alone for triage.
 - Before posting comments or updating tickets, summarize the intended change briefly.
 - Treat `comment-add` and `update` as live actions.
