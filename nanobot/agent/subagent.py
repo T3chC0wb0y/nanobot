@@ -9,13 +9,14 @@ from typing import Any
 from loguru import logger
 
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
+from nanobot.agent.tools.browser import BrowserOpenTool, BrowserScreenshotTool, BrowserTextTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ExecToolConfig
+from nanobot.config.schema import BrowserToolsConfig, ExecToolConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.utils.helpers import build_assistant_message
 
@@ -31,10 +32,11 @@ class SubagentManager:
         model: str | None = None,
         web_search_config: "WebSearchConfig | None" = None,
         web_proxy: str | None = None,
+        browser_config: BrowserToolsConfig | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
     ):
-        from nanobot.config.schema import ExecToolConfig, WebSearchConfig
+        from nanobot.config.schema import BrowserToolsConfig, ExecToolConfig, WebSearchConfig
 
         self.provider = provider
         self.workspace = workspace
@@ -42,6 +44,7 @@ class SubagentManager:
         self.model = model or provider.get_default_model()
         self.web_search_config = web_search_config or WebSearchConfig()
         self.web_proxy = web_proxy
+        self.browser_config = browser_config or BrowserToolsConfig()
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
@@ -106,6 +109,9 @@ class SubagentManager:
             ))
             tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
             tools.register(WebFetchTool(proxy=self.web_proxy))
+            tools.register(BrowserOpenTool(config=self.browser_config))
+            tools.register(BrowserTextTool(config=self.browser_config))
+            tools.register(BrowserScreenshotTool(config=self.browser_config))
             
             system_prompt = self._build_subagent_prompt()
             messages: list[dict[str, Any]] = [

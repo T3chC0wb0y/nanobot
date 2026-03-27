@@ -121,6 +121,19 @@ class WebToolsConfig(Base):
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
+class BrowserToolsConfig(Base):
+    """Browser tool configuration."""
+
+    enabled: bool = False
+    headless: bool = True
+    executable_path: str | None = None
+    user_data_dir: str = "~/.nanobot/browser"
+    viewport_width: int = 1440
+    viewport_height: int = 900
+    navigation_timeout_ms: int = 30000
+    max_text_chars: int = 20000
+
+
 class ExecToolConfig(Base):
     """Shell exec tool configuration."""
 
@@ -152,6 +165,7 @@ class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
+    browser: BrowserToolsConfig = Field(default_factory=BrowserToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     input_limits: InputLimitsConfig = Field(default_factory=InputLimitsConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
