@@ -135,7 +135,7 @@ IMPORTANT: To send files (images, documents, audio, video) to the user, you MUST
         user_content = self._build_user_content(current_message, media)
 
         # Merge runtime context and user content into a single user message
-        # to avoid consecutive same-role messages that some providers reject.
+        # to avoid changing the system prompt every turn, which hurts cache reuse.
         if isinstance(user_content, str):
             merged = f"{runtime_ctx}\n\n{user_content}"
         else:
@@ -187,6 +187,9 @@ IMPORTANT: To send files (images, documents, audio, video) to the user, you MUST
                 continue
             b64 = base64.b64encode(raw).decode()
             images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+        note_text = "\n".join(notes).strip()
+        text_block = text if not note_text else (f"{note_text}\n\n{text}" if text else note_text)
 
         note_text = "\n".join(notes).strip()
         text_block = text if not note_text else (f"{note_text}\n\n{text}" if text else note_text)

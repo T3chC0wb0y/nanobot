@@ -49,7 +49,6 @@ class ProviderSpec:
 
     # gateway behavior
     strip_model_prefix: bool = False  # strip "provider/" before sending to gateway
-    supports_max_completion_tokens: bool = False
 
     # per-model param overrides, e.g. (("kimi-k2.5", {"temperature": 1.0}),)
     model_overrides: tuple[tuple[str, dict[str, Any]], ...] = ()
@@ -287,6 +286,23 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         backend="openai_compat",
         default_api_base="https://api.mistral.ai/v1",
     ),
+    # Mistral AI: OpenAI-compatible API at api.mistral.ai/v1.
+    ProviderSpec(
+        name="mistral",
+        keywords=("mistral",),
+        env_key="MISTRAL_API_KEY",
+        display_name="Mistral",
+        litellm_prefix="mistral",  # mistral-large-latest → mistral/mistral-large-latest
+        skip_prefixes=("mistral/",),  # avoid double-prefix
+        env_extras=(),
+        is_gateway=False,
+        is_local=False,
+        detect_by_key_prefix="",
+        detect_by_base_keyword="",
+        default_api_base="https://api.mistral.ai/v1",
+        strip_model_prefix=False,
+        model_overrides=(),
+    ),
     # === Local deployment (matched by config key, NOT by api_base) =========
     # vLLM / any OpenAI-compatible local server
     ProviderSpec(
@@ -315,6 +331,17 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         env_key="",
         display_name="OpenVINO Model Server",
         backend="openai_compat",
+        is_direct=True,
+        is_local=True,
+        default_api_base="http://localhost:8000/v3",
+    ),
+    # === OpenVINO Model Server (direct, local, OpenAI-compatible at /v3) ===
+    ProviderSpec(
+        name="ovms",
+        keywords=("openvino", "ovms"),
+        env_key="",
+        display_name="OpenVINO Model Server",
+        litellm_prefix="",
         is_direct=True,
         is_local=True,
         default_api_base="http://localhost:8000/v3",
