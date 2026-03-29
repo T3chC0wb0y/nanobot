@@ -186,6 +186,21 @@ def fetch_tickets(status=None, page=1, items=25):
     return data.get('items') or [], data
 
 
+def fetch_ticket(ticket_id):
+    status, body = request_json(f'/tickets/{ticket_id}')
+    if status != 200:
+        raise RuntimeError(f'HTTP {status}: {body[:300]}')
+    return json.loads(body) if body else {}
+
+
+def fetch_comments(ticket_id, page=1, items=25):
+    status, body = request_json(f'/tickets/{ticket_id}/comments', params={'page': page, 'itemsInPage': items})
+    if status != 200:
+        raise RuntimeError(f'HTTP {status}: {body[:300]}')
+    data = json.loads(body) if body else {}
+    return data.get('items') or data.get('Items') or data.get('comments') or []
+
+
 def print_ticket_line(ticket):
     print(
         f"{ticket_ref(ticket)} | "
@@ -194,6 +209,63 @@ def print_ticket_line(ticket):
         f"wait:{waiting_on(ticket)} | next:{next_action(ticket)} | "
         f"{ticket.get('CustomerName') or '-'} | {ticket.get('TicketTitle') or '-'}"
     )
+
+
+def print_dry_run(action, ticket_id, payload):
+    print(json.dumps({
+        'dry_run': True,
+        'action': action,
+        'ticket_id': ticket_id,
+        'payload': payload,
+    }, indent=2, sort_keys=True))
+
+
+def latest_comment_text(ticket, comments):
+    for field in ('LastEndUserComment', 'LastTechnicianComment', 'FirstComment'):
+        value = (ticket.get(field) or '').strip()
+        if value:
+            return value
+    for comment in reversed(comments):
+        for key in ('CommentText', 'commentText', 'Text', 'text'):
+            value = (comment.get(key) or '').strip()
+            if value:
+                return value
+    return ''
+
+
+def draft_reply_text(ticket, comments):
+    title = (ticket.get('TicketTitle') or '').strip() or 'this issue'
+    customer = (ticket.get('CustomerName') or 'there').strip()
+    wait = waiting_on(ticket)
+    action = next_action(ticket)
+    latest = latest_comment_text(ticket, comments)
+    latest = ' '.join(latest.split())
+    if len(latest) > 280:
+        latest = latest[:277] + '...'
+
+    opening = f"Hi {customer},"
+    if customer.lower() == 'there':
+        opening = 'Hi,'
+
+    lines = [opening, '']
+    if wait == 'us':
+        lines.append(f"Thanks for the update on {title}.")
+        if latest:
+            lines.append(f"I reviewed your latest note: \"{latest}\"")
+        if action == 'reply/work':
+            lines.append("We’re looking into this now and I’ll follow up with the next step as soon as I have it.")
+        else:
+            lines.append("I’m reviewing the next step now and will follow up shortly.")
+    elif wait == 'them':
+        lines.append(f"I'm following up on {title}.")
+        if latest:
+            lines.append(f"My last note was: \"{latest}\"")
+        lines.append("When you have a chance, please send the requested details or let me know whether the issue is still happening.")
+    else:
+        lines.append(f"I'm reviewing {title} and will follow up with the next step shortly.")
+
+    lines.extend(['', 'Thank you,'])
+    return '\n'.join(lines)
 
 
 def cmd_list(args):
@@ -241,6 +313,10 @@ def cmd_comments(args):
 
 def cmd_comment_add(args):
     payload = {'CommentText': args.text}
+    if args.dry_run:
+        print_dry_run('comment-add', args.ticket_id, payload)
+        return 0
+
     status, body = request_json(f'/tickets/{args.ticket_id}/comments', method='POST', payload=payload)
     print(f'HTTP {status}')
     print(body)
@@ -267,10 +343,25 @@ def cmd_update(args):
     if not payload:
         raise RuntimeError('No update fields provided.')
 
+    if args.dry_run:
+        print_dry_run('update', args.ticket_id, payload)
+        return 0
+
     status, body = request_json(f'/tickets/{args.ticket_id}', method='PUT', payload=payload)
     print(f'HTTP {status}')
     print(body)
     return 0 if status == 200 else 1
+
+
+def cmd_draft_reply(args):
+    ticket = fetch_ticket(args.ticket_id)
+    comments = fetch_comments(args.ticket_id, page=1, items=args.items)
+    print(f"ticket={ticket_ref(ticket)}")
+    print(f"waiting_on={waiting_on(ticket)}")
+    print(f"next_action={next_action(ticket)}")
+    print()
+    print(draft_reply_text(ticket, comments))
+    return 0
 
 
 def gather_active(statuses, items):
@@ -370,7 +461,7 @@ def cmd_action_queue(args):
 def build_parser():
     p = argparse.ArgumentParser(
         description='Atera ticket helper',
-        epilog='Queue views print TicketNumber and TicketID together when both are present. Detail, comments, update, and comment-add require TicketID.',
+        epilog='Queue views print TicketNumber and TicketID together when both are present. Detail, comments, draft-reply, update, and comment-add require TicketID.',
     )
     sub = p.add_subparsers(dest='cmd', required=True)
 
@@ -395,6 +486,7 @@ def build_parser():
     p_comment_add = sub.add_parser('comment-add', help='Add comment to a ticket by TicketID')
     p_comment_add.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_comment_add.add_argument('text')
+    p_comment_add.add_argument('--dry-run', action='store_true', help='Print the proposed comment payload without sending it')
     p_comment_add.set_defaults(func=cmd_comment_add)
 
     p_update = sub.add_parser('update', help='Update a ticket by TicketID')
@@ -406,7 +498,13 @@ def build_parser():
     p_update.add_argument('--type')
     p_update.add_argument('--tech-id', type=int)
     p_update.add_argument('--tech-email')
+    p_update.add_argument('--dry-run', action='store_true', help='Print the proposed update payload without sending it')
     p_update.set_defaults(func=cmd_update)
+
+    p_draft_reply = sub.add_parser('draft-reply', help='Draft a reply for a ticket by TicketID')
+    p_draft_reply.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
+    p_draft_reply.add_argument('--items', type=int, default=25, help='How many recent comments to inspect when drafting')
+    p_draft_reply.set_defaults(func=cmd_draft_reply)
 
     p_triage = sub.add_parser('triage', help='Queue view for active tickets')
     p_triage.add_argument('--statuses', default='Open,Pending')
