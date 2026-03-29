@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from urllib import request, parse, error
 
 BASE_URL = os.environ.get('ATERA_BASE_URL', 'https://app.atera.com/api/v3').rstrip('/')
-
+STATE_DIR = Path.home() / '.local' / 'state' / 'atera-alerts'
+WATCH_FILE = STATE_DIR / 'watch.json'
 
 SIGNOFF_PATTERNS = [
     re.compile(r'^thanks[,!]*$', re.IGNORECASE),
@@ -34,6 +35,10 @@ CSS_NOISE_TOKENS = {
     'currentcolor', 'unset', 'important', 'display', 'margin', 'padding',
     'font-size', 'font-family', 'line-height', 'text-decoration', 'background',
 }
+
+
+def ensure_state_dir():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def default_key_paths() -> list[Path]:
@@ -69,6 +74,23 @@ def load_api_key():
             return path.read_text(encoding='utf-8').strip()
 
     return None
+
+
+def load_watch_list():
+    ensure_state_dir()
+    if WATCH_FILE.exists():
+        try:
+            data = json.loads(WATCH_FILE.read_text())
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return {}
+    return {}
+
+
+def save_watch_list(data):
+    ensure_state_dir()
+    WATCH_FILE.write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
 def parse_dt(value):
@@ -193,6 +215,10 @@ def action_bucket(ticket):
     return 'reply-now'
 
 
+def likely_session_required(ticket):
+    return action_bucket(ticket) == 'needs-session'
+
+
 def request_json(path, params=None, method='GET', payload=None):
     api_key = load_api_key()
     if not api_key:
@@ -294,7 +320,7 @@ def title_case_name(value):
     return ' '.join(words).strip()
 
 
-def extract_customer_name(ticket, comments):
+def extract_contact_name(ticket, comments):
     candidates = [
         ticket.get('ContactName'),
         ticket.get('EndUserName'),
@@ -391,14 +417,34 @@ def latest_comment_text(ticket, comments):
     return ''
 
 
+def latest_end_user_text(ticket, comments):
+    value = clean_comment_text(ticket.get('LastEndUserComment') or '')
+    if value:
+        return value
+    for comment in reversed(comments):
+        for key in ('CommentText', 'commentText', 'Text', 'text', 'Body', 'body'):
+            value = clean_comment_text(comment.get(key) or '')
+            author = ' '.join(str(comment.get(k) or '') for k in ('EndUserName', 'ContactName', 'CustomerContactName', 'FromName', 'UserName')).strip().lower()
+            if value and author:
+                return value
+    return ''
+
+
+def latest_technician_text(ticket, comments):
+    value = clean_comment_text(ticket.get('LastTechnicianComment') or '')
+    if value:
+        return value
+    return ''
+
+
 def draft_reply_text(ticket, comments):
     title = normalize_space(clean_html_text(ticket.get('TicketTitle') or '')) or 'this issue'
-    customer = extract_customer_name(ticket, comments)
+    contact = extract_contact_name(ticket, comments)
     wait = waiting_on(ticket)
     action = next_action(ticket)
     latest = summarize_comment(latest_comment_text(ticket, comments))
 
-    opening = f"Hi {customer}," if customer else 'Hi,'
+    opening = f"Hi {contact}," if contact else 'Hi,'
     lines = [opening, '']
 
     if wait == 'us':
@@ -421,6 +467,41 @@ def draft_reply_text(ticket, comments):
 
     lines.extend(['', 'Thank you,'])
     return '\n'.join(lines)
+
+
+def ticket_context(ticket, comments):
+    contact_name = extract_contact_name(ticket, comments)
+    latest_user = latest_end_user_text(ticket, comments)
+    latest_tech = latest_technician_text(ticket, comments)
+    session_required = likely_session_required(ticket)
+    autonomy_hint = 'candidate'
+    if session_required:
+        autonomy_hint = 'defer_session_required'
+    elif (ticket.get('TicketPriority') or '').lower() in {'high', 'urgent', 'critical'}:
+        autonomy_hint = 'review_priority'
+
+    return {
+        'ticket_id': ticket.get('TicketID'),
+        'ticket_number': ticket.get('TicketNumber') or ticket.get('TicketID'),
+        'ticket_ref': ticket_ref(ticket),
+        'title': normalize_space(clean_html_text(ticket.get('TicketTitle') or '')),
+        'status': ticket.get('TicketStatus'),
+        'priority': ticket.get('TicketPriority'),
+        'impact': ticket.get('TicketImpact'),
+        'type': ticket.get('TicketType'),
+        'customer_name': ticket.get('CustomerName'),
+        'end_user_id': ticket.get('EndUserID'),
+        'end_user_email': ticket.get('EndUserEmail'),
+        'contact_name': contact_name,
+        'waiting_on': waiting_on(ticket),
+        'next_action': next_action(ticket),
+        'likely_session_required': session_required,
+        'autonomy_hint': autonomy_hint,
+        'latest_end_user_message': latest_user,
+        'latest_technician_message': latest_tech,
+        'latest_visible_message': latest_comment_text(ticket, comments),
+        'watch_listed': str(ticket.get('TicketID')) in load_watch_list(),
+    }
 
 
 def cmd_list(args):
@@ -457,6 +538,13 @@ def cmd_get(args):
     print(f'HTTP {status}')
     print(body)
     return 0 if status == 200 else 1
+
+
+def cmd_ticket_context(args):
+    ticket = fetch_ticket(args.ticket_id)
+    comments = fetch_comments(args.ticket_id, page=1, items=args.items)
+    print(json.dumps(ticket_context(ticket, comments), indent=2, sort_keys=True))
+    return 0
 
 
 def cmd_comments(args):
@@ -508,6 +596,18 @@ def cmd_update(args):
     return 0 if status == 200 else 1
 
 
+def cmd_resolve(args):
+    payload = {'TicketStatus': 'Resolved'}
+    if args.dry_run:
+        print_dry_run('resolve', args.ticket_id, payload)
+        return 0
+
+    status, body = request_json(f'/tickets/{args.ticket_id}', method='PUT', payload=payload)
+    print(f'HTTP {status}')
+    print(body)
+    return 0 if status == 200 else 1
+
+
 def cmd_draft_reply(args):
     ticket = fetch_ticket(args.ticket_id)
     comments = fetch_comments(args.ticket_id, page=1, items=args.items)
@@ -516,6 +616,31 @@ def cmd_draft_reply(args):
     print(f"next_action={next_action(ticket)}")
     print()
     print(draft_reply_text(ticket, comments))
+    return 0
+
+
+def cmd_watch_add(args):
+    watch = load_watch_list()
+    watch[str(args.ticket_id)] = {
+        'reason': args.reason or 'watch',
+        'added_at': datetime.now(timezone.utc).isoformat(),
+    }
+    save_watch_list(watch)
+    print(json.dumps({'watched': True, 'ticket_id': args.ticket_id, 'reason': watch[str(args.ticket_id)]['reason']}, indent=2))
+    return 0
+
+
+def cmd_watch_list(args):
+    print(json.dumps(load_watch_list(), indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_watch_remove(args):
+    watch = load_watch_list()
+    existed = str(args.ticket_id) in watch
+    watch.pop(str(args.ticket_id), None)
+    save_watch_list(watch)
+    print(json.dumps({'removed': existed, 'ticket_id': args.ticket_id}, indent=2))
     return 0
 
 
@@ -616,7 +741,7 @@ def cmd_action_queue(args):
 def build_parser():
     p = argparse.ArgumentParser(
         description='Atera ticket helper',
-        epilog='Queue views print TicketNumber and TicketID together when both are present. Detail, comments, draft-reply, update, and comment-add require TicketID.',
+        epilog='Queue views print TicketNumber and TicketID together when both are present. Detail, ticket-context, comments, draft-reply, update, resolve, and comment-add require TicketID.',
     )
     sub = p.add_subparsers(dest='cmd', required=True)
 
@@ -631,6 +756,11 @@ def build_parser():
     p_get = sub.add_parser('get', help='Get ticket by TicketID')
     p_get.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_get.set_defaults(func=cmd_get)
+
+    p_ctx = sub.add_parser('ticket-context', help='Structured context for a ticket by TicketID')
+    p_ctx.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
+    p_ctx.add_argument('--items', type=int, default=25, help='How many recent comments to inspect')
+    p_ctx.set_defaults(func=cmd_ticket_context)
 
     p_comments = sub.add_parser('comments', help='List comments for a ticket by TicketID')
     p_comments.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
@@ -656,10 +786,27 @@ def build_parser():
     p_update.add_argument('--dry-run', action='store_true', help='Print the proposed update payload without sending it')
     p_update.set_defaults(func=cmd_update)
 
+    p_resolve = sub.add_parser('resolve', help='Resolve a ticket by TicketID')
+    p_resolve.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
+    p_resolve.add_argument('--dry-run', action='store_true', help='Print the proposed resolve payload without sending it')
+    p_resolve.set_defaults(func=cmd_resolve)
+
     p_draft_reply = sub.add_parser('draft-reply', help='Draft a reply for a ticket by TicketID')
     p_draft_reply.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_draft_reply.add_argument('--items', type=int, default=25, help='How many recent comments to inspect when drafting')
     p_draft_reply.set_defaults(func=cmd_draft_reply)
+
+    p_watch_add = sub.add_parser('watch-add', help='Add a ticket to the watch list')
+    p_watch_add.add_argument('ticket_id', type=int)
+    p_watch_add.add_argument('--reason')
+    p_watch_add.set_defaults(func=cmd_watch_add)
+
+    p_watch_list = sub.add_parser('watch-list', help='List watched tickets')
+    p_watch_list.set_defaults(func=cmd_watch_list)
+
+    p_watch_remove = sub.add_parser('watch-remove', help='Remove a ticket from the watch list')
+    p_watch_remove.add_argument('ticket_id', type=int)
+    p_watch_remove.set_defaults(func=cmd_watch_remove)
 
     p_triage = sub.add_parser('triage', help='Queue view for active tickets')
     p_triage.add_argument('--statuses', default='Open,Pending')

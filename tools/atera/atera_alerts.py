@@ -80,22 +80,33 @@ def latest_ts(ticket):
 
 def collect_alerts():
     state = load_state()
+    watched = mod.load_watch_list()
     tickets = mod.gather_active(['Open', 'Pending'], 100)
     alerts = []
 
     for ticket in tickets:
-        score, reasons = severity(ticket)
-        if score < 3:
-            continue
         key = str(ticket.get('TicketID'))
         ts = latest_ts(ticket)
         wait = mod.waiting_on(ticket)
         pr = (ticket.get('TicketPriority') or '').lower()
-        if wait != 'us' and pr not in {'critical', 'high', 'urgent'}:
+        watched_meta = watched.get(key)
+        score, reasons = severity(ticket)
+
+        should_alert = False
+        if watched_meta:
+            should_alert = True
+            reasons = [f"watched:{watched_meta.get('reason') or 'watch'}"] + reasons
+            score = max(score, 3)
+        else:
+            if score >= 3 and (wait == 'us' or pr in {'critical', 'high', 'urgent'}):
+                should_alert = True
+
+        if not should_alert:
             continue
         if state.get(key) == ts:
             continue
-        alerts.append((score, ticket, reasons, ts))
+
+        alerts.append((score, ticket, reasons, ts, bool(watched_meta)))
         state[key] = ts
 
     save_state(state)
@@ -108,17 +119,18 @@ def render_text(alerts):
         return 'NO_REPLY'
 
     lines = ['Atera urgent check:']
-    for score, ticket, reasons, _ in alerts[:5]:
+    for score, ticket, reasons, _, watched in alerts[:5]:
         reason_text = ', '.join(reasons[:3]) if reasons else 'threshold'
+        watch_text = ' | watched' if watched else ''
         lines.append(
-            f"- {mod.ticket_ref(ticket)} | {ticket.get('TicketStatus')} | {ticket.get('CustomerName') or '-'} | {ticket.get('TicketTitle') or '-'} | score {score} | wait:{mod.waiting_on(ticket)} | reasons:{reason_text}"
+            f"- {mod.ticket_ref(ticket)} | {ticket.get('TicketStatus')} | {ticket.get('CustomerName') or '-'} | {ticket.get('TicketTitle') or '-'} | score {score}{watch_text} | wait:{mod.waiting_on(ticket)} | reasons:{reason_text}"
         )
     return '\n'.join(lines)
 
 
 def render_json(alerts):
     items = []
-    for score, ticket, reasons, ts in alerts[:5]:
+    for score, ticket, reasons, ts, watched in alerts[:5]:
         items.append({
             'ticket_id': ticket.get('TicketID'),
             'ticket_number': ticket.get('TicketNumber') or ticket.get('TicketID'),
@@ -129,6 +141,7 @@ def render_json(alerts):
             'score': score,
             'waiting_on': mod.waiting_on(ticket),
             'reasons': reasons,
+            'watched': watched,
             'timestamp': ts,
         })
     return json.dumps({'alerts': items}, indent=2)

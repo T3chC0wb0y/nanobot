@@ -1,6 +1,6 @@
 ---
 name: atera
-description: "Work with Atera tickets using the local Python helper for triage, comments, updates, and urgent checks."
+description: "Work with Atera tickets using the local Python helper for triage, structured context, comments, status changes, resolutions, and urgent watch checks."
 metadata: {"nanobot":{"emoji":"🎫","requires":{"bins":["python3"]}}}
 ---
 
@@ -20,6 +20,61 @@ Optional:
 - `ATERA_BASE_URL` (defaults to `https://app.atera.com/api/v3`)
 
 Do not print API keys or paste secrets into chat unless the user explicitly asks.
+
+## Beta operating model
+
+This workflow is in **beta approval mode**.
+
+### Core rule
+- Do **not** do any ticket work, post any user-facing comment, change any live ticket field, or resolve any ticket without Bob's approval.
+
+### Approval gates
+1. If the ticket looks safely autonomous, prepare a short work plan and send Bob a **Teams DM** asking approval **before doing any work**.
+2. After work is completed, send Bob a **Teams DM** showing:
+   - what was completed
+   - the exact end-user message you want to send
+   - that you intend to resolve the ticket
+3. Wait for Bob's approval again before posting the comment and resolving.
+
+### Allowed autonomous scope in beta
+Only consider tickets that are fully within autonomous scope, such as:
+- simple factual questions the agent can answer confidently
+- straightforward low-risk tasks the agent can complete without the user being present
+- repeatable tasks the agent has already been taught and can perform safely
+
+### Out of scope / silent defer
+If the ticket likely requires the user to be logged in, remote support, live collaboration, ambiguous troubleshooting, risky judgment, security-sensitive changes, billing/account changes, or anything outside safe scope:
+- do not reply
+- do not acknowledge receipt
+- do not tell the user to schedule time
+- do not partially work the ticket
+- leave it for Bob
+
+## Reply style for end users
+Only send an end-user reply **after the work is actually done** and Bob has approved the exact message.
+
+Rules:
+- brief
+- non-technical language
+- say what was done, not how
+- do not quote the user's message back to them
+- do not restate the whole issue unless needed
+- do not send placeholder progress replies
+- do not send scheduling language
+
+Good examples:
+- `Hi Elaine,\nThe automatic reply has been updated.\nThank you,`
+- `Hi John,\nYour access has been restored.\nThank you,`
+- `Hi Sarah,\nThe requested change has been made.\nThank you,`
+
+## High-priority watch / escalation
+If a ticket looks likely high priority or high impact:
+- do not work it autonomously unless Bob explicitly approves
+- add it to the watch list
+- use recurring checks every 10 minutes while it remains watched
+- send Bob a **Teams DM** when the ticket is first flagged and when there is a meaningful change
+
+Use `HEARTBEAT.md` for recurring watch checks rather than a one-time reminder.
 
 ## Common commands
 
@@ -53,9 +108,19 @@ Get one ticket by `TicketID`:
 python3 tools/atera/atera_tickets.py get <ticket_id>
 ```
 
+Get structured context for one ticket by `TicketID`:
+```bash
+python3 tools/atera/atera_tickets.py ticket-context <ticket_id> --items 25
+```
+
 List comments by `TicketID`:
 ```bash
 python3 tools/atera/atera_tickets.py comments <ticket_id> --page 1 --items 25
+```
+
+Draft reply (testing aid only):
+```bash
+python3 tools/atera/atera_tickets.py draft-reply <ticket_id> --items 25
 ```
 
 Dry-run a proposed comment by `TicketID`:
@@ -78,12 +143,37 @@ Update a ticket by `TicketID`:
 python3 tools/atera/atera_tickets.py update <ticket_id> --status Pending --priority High
 ```
 
-Urgent alert check:
+Dry-run resolve by `TicketID`:
+```bash
+python3 tools/atera/atera_tickets.py resolve <ticket_id> --dry-run
+```
+
+Resolve by `TicketID`:
+```bash
+python3 tools/atera/atera_tickets.py resolve <ticket_id>
+```
+
+Add a ticket to the watch list:
+```bash
+python3 tools/atera/atera_tickets.py watch-add <ticket_id> --reason "likely high priority"
+```
+
+List watched tickets:
+```bash
+python3 tools/atera/atera_tickets.py watch-list
+```
+
+Remove a ticket from the watch list:
+```bash
+python3 tools/atera/atera_tickets.py watch-remove <ticket_id>
+```
+
+Urgent / watched alert check:
 ```bash
 python3 tools/atera/atera_alerts.py
 ```
 
-JSON urgent alert check:
+JSON urgent / watched alert check:
 ```bash
 python3 tools/atera/atera_alerts.py --json
 ```
@@ -97,13 +187,10 @@ python3 tools/atera/atera_gate.py
 
 - Prefer read-only commands first when validating connectivity.
 - Queue views print `TicketNumber` and `TicketID` together when both are present, for example `#12345 (id:67890)`.
-- Use `TicketID` for `get`, `comments`, `comment-add`, and `update`.
+- Use `TicketID` for `get`, `ticket-context`, `comments`, `draft-reply`, `comment-add`, `update`, `resolve`, and watch-list actions.
 - Use `waiting_on()`-based views instead of status alone for triage.
-- Draft the proposed reply or update in chat first, then wait for explicit approval before running `comment-add` or `update`.
-- Use `--dry-run` first for `comment-add` and `update` during beta work.
-- Never close, resolve, or otherwise finalize tickets automatically during beta.
-- Never change assignment, priority, impact, type, or status unless the user explicitly asks for that exact change.
-- Limit beta handling to low-risk tickets. Escalate ambiguous, security-related, billing-related, account-change, or high-impact tickets for human review.
-- Treat `comment-add` and `update` as live actions when `--dry-run` is not used.
-- Keep urgent checks read-only. Use alerts to surface tickets for review, not to take automatic ticket actions.
-- For recurring urgent checks, use `HEARTBEAT.md` rather than a one-time reminder.
+- Treat `draft-reply` as a testing aid, not the primary decision engine.
+- Use `ticket-context` as the main structured input to the model.
+- Treat `comment-add`, `update`, and `resolve` as live actions when `--dry-run` is not used.
+- In beta, always get Bob's approval before work, and again before posting the final message and resolving.
+- Keep urgent checks read-only. Use alerts and watch checks to surface tickets for Bob review and Teams escalation.
