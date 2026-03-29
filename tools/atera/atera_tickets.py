@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from urllib import request, parse, error
 
 BASE_URL = os.environ.get('ATERA_BASE_URL', 'https://app.atera.com/api/v3').rstrip('/')
+PROXY_BASE_URL = os.environ.get('ATERA_PROXY_BASE_URL', 'https://app.atera.com/proxy').rstrip('/')
 STATE_DIR = Path.home() / '.local' / 'state' / 'atera-alerts'
 WATCH_FILE = STATE_DIR / 'watch.json'
 
@@ -219,12 +220,12 @@ def likely_session_required(ticket):
     return action_bucket(ticket) == 'needs-session'
 
 
-def request_json(path, params=None, method='GET', payload=None):
+def _request_json_base(base_url, path, params=None, method='GET', payload=None):
     api_key = load_api_key()
     if not api_key:
         raise RuntimeError('No API key found. Set ATERA_API_KEY or ATERA_API_KEY_FILE.')
 
-    url = f"{BASE_URL}{path}"
+    url = f"{base_url}{path}"
     if params:
         url += '?' + parse.urlencode({k: v for k, v in params.items() if v is not None})
 
@@ -246,6 +247,14 @@ def request_json(path, params=None, method='GET', payload=None):
     except error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace')
         return e.code, body
+
+
+def request_json(path, params=None, method='GET', payload=None):
+    return _request_json_base(BASE_URL, path, params=params, method=method, payload=payload)
+
+
+def request_proxy_json(path, params=None, method='GET', payload=None):
+    return _request_json_base(PROXY_BASE_URL, path, params=params, method=method, payload=payload)
 
 
 def fetch_tickets(status=None, page=1, items=25):
@@ -289,6 +298,18 @@ def print_dry_run(action, ticket_id, payload):
         'ticket_id': ticket_id,
         'payload': payload,
     }, indent=2, sort_keys=True))
+
+
+def technician_console_html(text):
+    parts = []
+    lines = (text or '').splitlines() or ['']
+    for line in lines:
+        safe = html.escape(line.strip())
+        if safe:
+            parts.append(f'<p>{safe}</p>')
+        else:
+            parts.append('<p><br></p>')
+    return ''.join(parts)
 
 
 def looks_like_bad_name(value):
@@ -555,15 +576,26 @@ def cmd_comments(args):
 
 
 def cmd_comment_add(args):
-    payload = {'CommentText': args.text}
+    payload = {
+        'ticketId': args.ticket_id,
+        'commentText': technician_console_html(args.text),
+        'isInternal': False,
+        'isResolution': False,
+        'attachments': [],
+    }
+    if args.from_mail_address:
+        payload['fromMailAddress'] = args.from_mail_address
+    if args.end_user_email:
+        payload['recipients'] = [{'name': args.recipient_name or '', 'emailAddress': args.end_user_email, 'recipientType': 'To'}]
+
     if args.dry_run:
         print_dry_run('comment-add', args.ticket_id, payload)
         return 0
 
-    status, body = request_json(f'/tickets/{args.ticket_id}/comments', method='POST', payload=payload)
+    status, body = request_proxy_json('/ticketscomments/comment/createCommentFromTechnicianConsole', method='POST', payload=payload)
     print(f'HTTP {status}')
     print(body)
-    return 0 if status in (200, 201) else 1
+    return 0 if status == 200 else 1
 
 
 def cmd_update(args):
@@ -597,12 +629,12 @@ def cmd_update(args):
 
 
 def cmd_resolve(args):
-    payload = {'TicketStatus': 'Resolved'}
+    payload = {}
     if args.dry_run:
         print_dry_run('resolve', args.ticket_id, payload)
         return 0
 
-    status, body = request_json(f'/tickets/{args.ticket_id}', method='PUT', payload=payload)
+    status, body = request_proxy_json(f'/ticketsmain/tickets/{args.ticket_id}/status/3', method='POST', payload=payload)
     print(f'HTTP {status}')
     print(body)
     return 0 if status == 200 else 1
@@ -771,6 +803,9 @@ def build_parser():
     p_comment_add = sub.add_parser('comment-add', help='Add comment to a ticket by TicketID')
     p_comment_add.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_comment_add.add_argument('text')
+    p_comment_add.add_argument('--end-user-email')
+    p_comment_add.add_argument('--recipient-name')
+    p_comment_add.add_argument('--from-mail-address')
     p_comment_add.add_argument('--dry-run', action='store_true', help='Print the proposed comment payload without sending it')
     p_comment_add.set_defaults(func=cmd_comment_add)
 
