@@ -1,13 +1,32 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib import request, parse, error
 
 BASE_URL = os.environ.get('ATERA_BASE_URL', 'https://app.atera.com/api/v3').rstrip('/')
+
+
+SIGNOFF_PATTERNS = [
+    re.compile(r'^thanks[,!]*$', re.IGNORECASE),
+    re.compile(r'^thank you[.!]*$', re.IGNORECASE),
+    re.compile(r'^regards[,!]*$', re.IGNORECASE),
+    re.compile(r'^best[,!]*$', re.IGNORECASE),
+    re.compile(r'^sincerely[,!]*$', re.IGNORECASE),
+]
+
+QUOTED_PATTERNS = [
+    re.compile(r'^from:\s', re.IGNORECASE),
+    re.compile(r'^sent:\s', re.IGNORECASE),
+    re.compile(r'^to:\s', re.IGNORECASE),
+    re.compile(r'^subject:\s', re.IGNORECASE),
+    re.compile(r'^on .+ wrote:\s*$', re.IGNORECASE),
+]
 
 
 def default_key_paths() -> list[Path]:
@@ -90,12 +109,31 @@ def next_action(ticket):
     return '-'
 
 
+def clean_html_text(value):
+    if not value:
+        return ''
+    text = html.unescape(str(value))
+    text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+    text = re.sub(r'(?i)</p\s*>', '\n', text)
+    text = re.sub(r'(?i)<p\b[^>]*>', '', text)
+    text = re.sub(r'(?is)<style\b[^>]*>.*?</style>', ' ', text)
+    text = re.sub(r'(?is)<script\b[^>]*>.*?</script>', ' ', text)
+    text = re.sub(r'(?s)<[^>]+>', ' ', text)
+    text = text.replace('\xa0', ' ')
+    text = re.sub(r'\r\n?', '\n', text)
+    return text.strip()
+
+
+def normalize_space(value):
+    return re.sub(r'\s+', ' ', value or '').strip()
+
+
 def ticket_text(ticket):
     parts = [
         ticket.get('TicketTitle') or '',
-        ticket.get('FirstComment') or '',
-        ticket.get('LastEndUserComment') or '',
-        ticket.get('LastTechnicianComment') or '',
+        clean_html_text(ticket.get('FirstComment') or ''),
+        clean_html_text(ticket.get('LastEndUserComment') or ''),
+        clean_html_text(ticket.get('LastTechnicianComment') or ''),
     ]
     return ' '.join(parts).lower()
 
@@ -220,49 +258,143 @@ def print_dry_run(action, ticket_id, payload):
     }, indent=2, sort_keys=True))
 
 
+def looks_like_bad_name(value):
+    if not value:
+        return True
+    name = normalize_space(clean_html_text(value))
+    if not name:
+        return True
+    if len(name) > 40:
+        return True
+    if any(token in name.lower() for token in ['<', '>', '@', 'http://', 'https://']):
+        return True
+    if re.search(r'\b(ticket|issue|support|service request|request)\b', name, re.IGNORECASE):
+        return True
+    if name.count('|') or name.count('/') > 1:
+        return True
+    return False
+
+
+def title_case_name(value):
+    words = []
+    for part in normalize_space(value).split(' '):
+        if not part:
+            continue
+        if re.fullmatch(r"[A-Z][a-z]+(?:[-'][A-Z][a-z]+)*", part):
+            words.append(part)
+        else:
+            words.append(part[:1].upper() + part[1:].lower())
+    return ' '.join(words).strip()
+
+
+def extract_customer_name(ticket, comments):
+    candidates = [
+        ticket.get('ContactName'),
+        ticket.get('EndUserName'),
+        ticket.get('CustomerContactName'),
+        ticket.get('RequesterName'),
+        ticket.get('CustomerName'),
+    ]
+    for comment in reversed(comments):
+        for key in ('EndUserName', 'ContactName', 'CustomerContactName', 'FromName', 'AuthorName', 'Name'):
+            if key in comment:
+                candidates.append(comment.get(key))
+
+    for candidate in candidates:
+        if looks_like_bad_name(candidate):
+            continue
+        cleaned = normalize_space(clean_html_text(candidate))
+        cleaned = re.sub(r'\s*\([^)]*\)\s*', ' ', cleaned)
+        cleaned = re.sub(r'\s*-\s*.+$', '', cleaned)
+        cleaned = re.sub(r'\s*,\s*.+$', '', cleaned)
+        cleaned = normalize_space(cleaned)
+        if looks_like_bad_name(cleaned):
+            continue
+        return title_case_name(cleaned)
+    return ''
+
+
+def strip_signature_and_quotes(text):
+    lines = [line.strip() for line in text.splitlines()]
+    cleaned_lines = []
+    for line in lines:
+        if not line:
+            if cleaned_lines and cleaned_lines[-1] != '':
+                cleaned_lines.append('')
+            continue
+        if line.startswith('>'):
+            break
+        if any(pat.match(line) for pat in QUOTED_PATTERNS):
+            break
+        if line in {'--', '---', '___'}:
+            break
+        if any(pat.match(line) for pat in SIGNOFF_PATTERNS):
+            break
+        if re.fullmatch(r'[-_]{5,}', line):
+            break
+        cleaned_lines.append(line)
+
+    while cleaned_lines and cleaned_lines[-1] == '':
+        cleaned_lines.pop()
+    return '\n'.join(cleaned_lines).strip()
+
+
+def clean_comment_text(value):
+    text = clean_html_text(value)
+    text = strip_signature_and_quotes(text)
+    text = re.sub(r'\b(?:cid:|image\d+\.)\S+', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def summarize_comment(text, limit=220):
+    text = normalize_space(text)
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(' ', 1)[0].strip()
+    return (cut or text[:limit]).rstrip(',. ') + '...'
+
+
 def latest_comment_text(ticket, comments):
     for field in ('LastEndUserComment', 'LastTechnicianComment', 'FirstComment'):
-        value = (ticket.get(field) or '').strip()
+        value = clean_comment_text(ticket.get(field) or '')
         if value:
             return value
     for comment in reversed(comments):
-        for key in ('CommentText', 'commentText', 'Text', 'text'):
-            value = (comment.get(key) or '').strip()
+        for key in ('CommentText', 'commentText', 'Text', 'text', 'Body', 'body'):
+            value = clean_comment_text(comment.get(key) or '')
             if value:
                 return value
     return ''
 
 
 def draft_reply_text(ticket, comments):
-    title = (ticket.get('TicketTitle') or '').strip() or 'this issue'
-    customer = (ticket.get('CustomerName') or 'there').strip()
+    title = normalize_space(clean_html_text(ticket.get('TicketTitle') or '')) or 'this issue'
+    customer = extract_customer_name(ticket, comments)
     wait = waiting_on(ticket)
     action = next_action(ticket)
-    latest = latest_comment_text(ticket, comments)
-    latest = ' '.join(latest.split())
-    if len(latest) > 280:
-        latest = latest[:277] + '...'
+    latest = summarize_comment(latest_comment_text(ticket, comments))
 
-    opening = f"Hi {customer},"
-    if customer.lower() == 'there':
-        opening = 'Hi,'
-
+    opening = f"Hi {customer}," if customer else 'Hi,'
     lines = [opening, '']
+
     if wait == 'us':
-        lines.append(f"Thanks for the update on {title}.")
+        lines.append(f"Thanks for the update about {title}.")
         if latest:
             lines.append(f"I reviewed your latest note: \"{latest}\"")
         if action == 'reply/work':
-            lines.append("We’re looking into this now and I’ll follow up with the next step as soon as I have it.")
+            lines.append("We’re looking into it now and I’ll follow up with the next step shortly.")
         else:
             lines.append("I’m reviewing the next step now and will follow up shortly.")
     elif wait == 'them':
-        lines.append(f"I'm following up on {title}.")
+        lines.append(f"I’m following up on {title}.")
         if latest:
-            lines.append(f"My last note was: \"{latest}\"")
+            lines.append(f"My last update was about: \"{latest}\"")
         lines.append("When you have a chance, please send the requested details or let me know whether the issue is still happening.")
     else:
-        lines.append(f"I'm reviewing {title} and will follow up with the next step shortly.")
+        lines.append(f"I’m reviewing {title} and will follow up with the next step shortly.")
+        if latest:
+            lines.append(f"The latest note I have is: \"{latest}\"")
 
     lines.extend(['', 'Thank you,'])
     return '\n'.join(lines)
