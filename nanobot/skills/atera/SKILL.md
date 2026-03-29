@@ -18,6 +18,8 @@ The helper reads credentials from:
 
 Optional:
 - `ATERA_BASE_URL` (defaults to `https://app.atera.com/api/v3`)
+- `ATERA_TECHNICIAN_ID`
+- `ATERA_TECHNICIAN_EMAIL`
 
 Do not print API keys or paste secrets into chat unless the user explicitly asks.
 
@@ -76,6 +78,89 @@ If a ticket looks likely high priority or high impact:
 
 Use `HEARTBEAT.md` for recurring watch checks rather than a one-time reminder.
 
+## Official v3 API task map
+Use this as the authoritative mapping for common ticket tasks.
+
+### Read ticket
+- `GET /api/v3/tickets/{ticketId}`
+- Returns ticket details including fields such as `EndUserID`, `EndUserEmail`, `EndUserFirstName`, and `EndUserLastName`.
+
+### Create ticket
+- `POST /api/v3/tickets`
+- Requires at least:
+  - `EndUserID`
+  - `TicketTitle`
+  - `Description`
+- Optional ticket fields include:
+  - `TicketPriority`
+  - `TicketImpact`
+  - `TicketStatus`
+  - `TicketType`
+  - `EndUserFirstName`
+  - `EndUserLastName`
+  - `EndUserEmail`
+
+### Update / resolve ticket
+- `PUT /api/v3/tickets/{ticketId}`
+- Editable fields documented in Swagger:
+  - `TicketTitle`
+  - `TicketStatus`
+  - `TicketType`
+  - `TicketPriority`
+  - `TicketImpact`
+  - `TechnicianContactID`
+  - `TechnicianEmail`
+- Resolve by sending `{"TicketStatus":"Resolved"}`.
+
+### Add comment to ticket
+- `POST /api/v3/tickets/{ticketId}/comments`
+- Requires:
+  - `CommentText`
+  - and either `TechnicianCommentDetails` or `EnduserCommentDetails`
+- Optional:
+  - `CommentTimestampUtc`
+
+#### Public technician comment
+Use:
+```json
+{
+  "CommentText": "...",
+  "CommentTimestampUtc": "<utc timestamp>",
+  "TechnicianCommentDetails": {
+    "TechnicianId": <existing technician id>,
+    "IsInternal": false,
+    "TechnicianEmail": "<optional technician email>"
+  }
+}
+```
+
+#### Internal technician note
+Use:
+```json
+{
+  "CommentText": "...",
+  "CommentTimestampUtc": "<utc timestamp>",
+  "TechnicianCommentDetails": {
+    "TechnicianId": <existing technician id>,
+    "IsInternal": true,
+    "TechnicianEmail": "<optional technician email>"
+  }
+}
+```
+
+#### End-user comment
+Use:
+```json
+{
+  "CommentText": "...",
+  "CommentTimestampUtc": "<utc timestamp>",
+  "EnduserCommentDetails": {
+    "EnduserId": <existing end user id>,
+    "EnduserEmail": "<optional end user email>"
+  }
+}
+```
+
 ## Common commands
 
 List active tickets:
@@ -123,24 +208,19 @@ Draft reply (testing aid only):
 python3 tools/atera/atera_tickets.py draft-reply <ticket_id> --items 25
 ```
 
-Dry-run a proposed comment by `TicketID`:
+Dry-run a public technician comment by `TicketID`:
 ```bash
-python3 tools/atera/atera_tickets.py comment-add <ticket_id> "text" --dry-run
+python3 tools/atera/atera_tickets.py comment-add <ticket_id> "text" --technician-id "$ATERA_TECHNICIAN_ID" --technician-email "$ATERA_TECHNICIAN_EMAIL" --dry-run
 ```
 
-Add a comment by `TicketID`:
+Add a public technician comment by `TicketID`:
 ```bash
-python3 tools/atera/atera_tickets.py comment-add <ticket_id> "text"
+python3 tools/atera/atera_tickets.py comment-add <ticket_id> "text" --technician-id "$ATERA_TECHNICIAN_ID" --technician-email "$ATERA_TECHNICIAN_EMAIL"
 ```
 
-Dry-run a proposed ticket update by `TicketID`:
+Add an internal note by `TicketID`:
 ```bash
-python3 tools/atera/atera_tickets.py update <ticket_id> --status Pending --priority High --dry-run
-```
-
-Update a ticket by `TicketID`:
-```bash
-python3 tools/atera/atera_tickets.py update <ticket_id> --status Pending --priority High
+python3 tools/atera/atera_tickets.py comment-add <ticket_id> "text" --technician-id "$ATERA_TECHNICIAN_ID" --technician-email "$ATERA_TECHNICIAN_EMAIL" --internal
 ```
 
 Dry-run resolve by `TicketID`:
@@ -151,6 +231,11 @@ python3 tools/atera/atera_tickets.py resolve <ticket_id> --dry-run
 Resolve by `TicketID`:
 ```bash
 python3 tools/atera/atera_tickets.py resolve <ticket_id>
+```
+
+Update a ticket by `TicketID`:
+```bash
+python3 tools/atera/atera_tickets.py update <ticket_id> --status Pending --priority High
 ```
 
 Add a ticket to the watch list:
@@ -188,7 +273,6 @@ python3 tools/atera/atera_gate.py
 - Prefer read-only commands first when validating connectivity.
 - Queue views print `TicketNumber` and `TicketID` together when both are present, for example `#12345 (id:67890)`.
 - Use `TicketID` for `get`, `ticket-context`, `comments`, `draft-reply`, `comment-add`, `update`, `resolve`, and watch-list actions.
-- Use `waiting_on()`-based views instead of status alone for triage.
 - Treat `draft-reply` as a testing aid, not the primary decision engine.
 - Use `ticket-context` as the main structured input to the model.
 - Treat `comment-add`, `update`, and `resolve` as live actions when `--dry-run` is not used.

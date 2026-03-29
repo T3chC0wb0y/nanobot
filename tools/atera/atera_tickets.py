@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from urllib import request, parse, error
 
 BASE_URL = os.environ.get('ATERA_BASE_URL', 'https://app.atera.com/api/v3').rstrip('/')
-PROXY_BASE_URL = os.environ.get('ATERA_PROXY_BASE_URL', 'https://app.atera.com/proxy').rstrip('/')
 STATE_DIR = Path.home() / '.local' / 'state' / 'atera-alerts'
 WATCH_FILE = STATE_DIR / 'watch.json'
 
@@ -101,6 +100,10 @@ def parse_dt(value):
         return datetime.fromisoformat(value.replace('Z', '+00:00'))
     except Exception:
         return None
+
+
+def utc_now_z():
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 def fmt_age(value):
@@ -220,12 +223,12 @@ def likely_session_required(ticket):
     return action_bucket(ticket) == 'needs-session'
 
 
-def _request_json_base(base_url, path, params=None, method='GET', payload=None):
+def request_json(path, params=None, method='GET', payload=None):
     api_key = load_api_key()
     if not api_key:
         raise RuntimeError('No API key found. Set ATERA_API_KEY or ATERA_API_KEY_FILE.')
 
-    url = f"{base_url}{path}"
+    url = f"{BASE_URL}{path}"
     if params:
         url += '?' + parse.urlencode({k: v for k, v in params.items() if v is not None})
 
@@ -247,14 +250,6 @@ def _request_json_base(base_url, path, params=None, method='GET', payload=None):
     except error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace')
         return e.code, body
-
-
-def request_json(path, params=None, method='GET', payload=None):
-    return _request_json_base(BASE_URL, path, params=params, method=method, payload=payload)
-
-
-def request_proxy_json(path, params=None, method='GET', payload=None):
-    return _request_json_base(PROXY_BASE_URL, path, params=params, method=method, payload=payload)
 
 
 def fetch_tickets(status=None, page=1, items=25):
@@ -300,16 +295,8 @@ def print_dry_run(action, ticket_id, payload):
     }, indent=2, sort_keys=True))
 
 
-def technician_console_html(text):
-    parts = []
-    lines = (text or '').splitlines() or ['']
-    for line in lines:
-        safe = html.escape(line.strip())
-        if safe:
-            parts.append(f'<p>{safe}</p>')
-        else:
-            parts.append('<p><br></p>')
-    return ''.join(parts)
+def compose_name(first_name, last_name):
+    return normalize_space(' '.join([clean_html_text(first_name or ''), clean_html_text(last_name or '')]))
 
 
 def looks_like_bad_name(value):
@@ -343,6 +330,7 @@ def title_case_name(value):
 
 def extract_contact_name(ticket, comments):
     candidates = [
+        compose_name(ticket.get('EndUserFirstName'), ticket.get('EndUserLastName')),
         ticket.get('ContactName'),
         ticket.get('EndUserName'),
         ticket.get('CustomerContactName'),
@@ -513,6 +501,8 @@ def ticket_context(ticket, comments):
         'customer_name': ticket.get('CustomerName'),
         'end_user_id': ticket.get('EndUserID'),
         'end_user_email': ticket.get('EndUserEmail'),
+        'end_user_first_name': ticket.get('EndUserFirstName'),
+        'end_user_last_name': ticket.get('EndUserLastName'),
         'contact_name': contact_name,
         'waiting_on': waiting_on(ticket),
         'next_action': next_action(ticket),
@@ -523,6 +513,35 @@ def ticket_context(ticket, comments):
         'latest_visible_message': latest_comment_text(ticket, comments),
         'watch_listed': str(ticket.get('TicketID')) in load_watch_list(),
     }
+
+
+def build_comment_payload(args):
+    payload = {
+        'CommentText': args.text,
+        'CommentTimestampUtc': utc_now_z(),
+    }
+    if args.as_enduser:
+        end_user_id = args.end_user_id
+        if end_user_id is None:
+            raise RuntimeError('End-user comment requires --end-user-id')
+        details = {'EnduserId': end_user_id}
+        if args.end_user_email:
+            details['EnduserEmail'] = args.end_user_email
+        payload['EnduserCommentDetails'] = details
+        return payload
+
+    technician_id = args.technician_id if args.technician_id is not None else os.environ.get('ATERA_TECHNICIAN_ID')
+    technician_email = args.technician_email or os.environ.get('ATERA_TECHNICIAN_EMAIL')
+    if technician_id is None:
+        raise RuntimeError('Technician comment requires --technician-id or ATERA_TECHNICIAN_ID')
+    details = {
+        'TechnicianId': int(technician_id),
+        'IsInternal': bool(args.internal),
+    }
+    if technician_email:
+        details['TechnicianEmail'] = technician_email
+    payload['TechnicianCommentDetails'] = details
+    return payload
 
 
 def cmd_list(args):
@@ -576,26 +595,15 @@ def cmd_comments(args):
 
 
 def cmd_comment_add(args):
-    payload = {
-        'ticketId': args.ticket_id,
-        'commentText': technician_console_html(args.text),
-        'isInternal': False,
-        'isResolution': False,
-        'attachments': [],
-    }
-    if args.from_mail_address:
-        payload['fromMailAddress'] = args.from_mail_address
-    if args.end_user_email:
-        payload['recipients'] = [{'name': args.recipient_name or '', 'emailAddress': args.end_user_email, 'recipientType': 'To'}]
-
+    payload = build_comment_payload(args)
     if args.dry_run:
         print_dry_run('comment-add', args.ticket_id, payload)
         return 0
 
-    status, body = request_proxy_json('/ticketscomments/comment/createCommentFromTechnicianConsole', method='POST', payload=payload)
+    status, body = request_json(f'/tickets/{args.ticket_id}/comments', method='POST', payload=payload)
     print(f'HTTP {status}')
     print(body)
-    return 0 if status == 200 else 1
+    return 0 if status in (200, 201) else 1
 
 
 def cmd_update(args):
@@ -629,12 +637,12 @@ def cmd_update(args):
 
 
 def cmd_resolve(args):
-    payload = {}
+    payload = {'TicketStatus': 'Resolved'}
     if args.dry_run:
         print_dry_run('resolve', args.ticket_id, payload)
         return 0
 
-    status, body = request_proxy_json(f'/ticketsmain/tickets/{args.ticket_id}/status/3', method='POST', payload=payload)
+    status, body = request_json(f'/tickets/{args.ticket_id}', method='PUT', payload=payload)
     print(f'HTTP {status}')
     print(body)
     return 0 if status == 200 else 1
@@ -803,9 +811,12 @@ def build_parser():
     p_comment_add = sub.add_parser('comment-add', help='Add comment to a ticket by TicketID')
     p_comment_add.add_argument('ticket_id', type=int, help='Atera TicketID, not TicketNumber')
     p_comment_add.add_argument('text')
+    p_comment_add.add_argument('--technician-id', type=int)
+    p_comment_add.add_argument('--technician-email')
+    p_comment_add.add_argument('--internal', action='store_true')
+    p_comment_add.add_argument('--as-enduser', action='store_true')
+    p_comment_add.add_argument('--end-user-id', type=int)
     p_comment_add.add_argument('--end-user-email')
-    p_comment_add.add_argument('--recipient-name')
-    p_comment_add.add_argument('--from-mail-address')
     p_comment_add.add_argument('--dry-run', action='store_true', help='Print the proposed comment payload without sending it')
     p_comment_add.set_defaults(func=cmd_comment_add)
 
