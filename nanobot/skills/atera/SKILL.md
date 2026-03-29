@@ -38,6 +38,19 @@ This workflow is in **beta approval mode**.
    - that you intend to resolve the ticket
 3. Wait for Bob's approval again before posting the comment and resolving.
 
+### Capability check before candidate classification
+Before treating any ticket as autonomous, explicitly verify that the requested action is something the helper and connected tools can **actually perform today**.
+
+Do **not** classify a ticket as a candidate just because it looks simple or resembles a common mailbox/content change.
+
+If the requested action depends on a capability that is not explicitly implemented and available to the agent right now, the ticket must be treated as **defer**.
+
+Examples that should currently defer unless a real tool exists for them:
+- setting or changing an out-of-office / automatic reply
+- mailbox configuration work that the agent does not yet have a working tool path for
+- any action that requires a desktop session, remote control, or user context
+- any action where the helper can describe the task but cannot execute it end to end
+
 ### Allowed autonomous scope in beta
 Only consider tickets that are fully within autonomous scope, such as:
 - simple factual questions the agent can answer confidently
@@ -50,7 +63,13 @@ If the ticket likely requires the user to be logged in, remote support, live col
 - do not acknowledge receipt
 - do not tell the user to schedule time
 - do not partially work the ticket
+- do not generate a user-facing draft reply as if work will proceed
 - leave it for Bob
+
+### Decision rule for helper outputs
+Treat helper hints like `autonomy_hint`, `likely_session_required`, `next_action`, or `draft-reply` as advisory only.
+
+They must never override the harder rule above: if the requested action is not within the agent's real implemented capabilities, the ticket is **defer**, even if helper output says `candidate` or produces a draft reply.
 
 ## Reply style for end users
 Only send an end-user reply **after the work is actually done** and Bob has approved the exact message.
