@@ -38,6 +38,17 @@ This workflow is in **beta approval mode**.
    - that you intend to resolve the ticket
 3. Wait for Bob's approval again before posting the comment and resolving.
 
+## Decision rubric
+Use only these top-level classifications:
+- **defer**
+- **candidate autonomous completion**
+
+`candidate autonomous completion` has two subtypes:
+- **instructions-only completion**: the agent can fully complete the ticket by sending a correct, verified, exact-steps reply and then resolving after approval
+- **direct action completion**: the agent can fully perform the requested work with real implemented tools, then send a brief completion message and resolve after approval
+
+There is no separate top-level `instructions-only` bucket.
+
 ### Capability check before candidate classification
 Before treating any ticket as autonomous, explicitly verify that the requested action is something the helper and connected tools can **actually perform today**.
 
@@ -51,11 +62,30 @@ Examples that should currently defer unless a real tool exists for them:
 - any action that requires a desktop session, remote control, or user context
 - any action where the helper can describe the task but cannot execute it end to end
 
-### Allowed autonomous scope in beta
-Only consider tickets that are fully within autonomous scope, such as:
-- simple factual questions the agent can answer confidently
-- straightforward low-risk tasks the agent can complete without the user being present
-- repeatable tasks the agent has already been taught and can perform safely
+### Candidate autonomous completion
+Only consider tickets that are fully within autonomous scope.
+
+#### Instructions-only completion
+Use when all of the following are true:
+- the ticket is asking for how-to guidance or a factual answer
+- the agent can verify the answer from current authoritative documentation when the task is UI- or version-dependent
+- the reply can include the **exact steps** the user can follow right now
+- no unsupported action is being implied
+
+For procedural tickets, the answer is not complete unless it gives:
+- where to go
+- what to click
+- what setting to change
+- what result to expect
+
+If the answer cannot be verified or the exact steps are not known, the ticket must be **defer**, not candidate.
+
+#### Direct action completion
+Use when all of the following are true:
+- the requested action is low-risk
+- the agent has a real implemented tool path to complete it now
+- the full task can be finished without the user being present
+- the agent can accurately describe what was done in brief non-technical language afterward
 
 ### Out of scope / silent defer
 If the ticket likely requires the user to be logged in, remote support, live collaboration, ambiguous troubleshooting, risky judgment, security-sensitive changes, billing/account changes, or anything outside safe scope:
@@ -70,6 +100,9 @@ If the ticket likely requires the user to be logged in, remote support, live col
 Treat helper hints like `autonomy_hint`, `likely_session_required`, `next_action`, or `draft-reply` as advisory only.
 
 They must never override the harder rule above: if the requested action is not within the agent's real implemented capabilities, the ticket is **defer**, even if helper output says `candidate` or produces a draft reply.
+
+### Correction rule
+If Bob corrects the classification or says the answer must include exact steps, treat that correction as binding for the current ticket. Do not present another approval draft that repeats the same mistake.
 
 ## Reply style for end users
 Only send an end-user reply **after the work is actually done** and Bob has approved the exact message.
