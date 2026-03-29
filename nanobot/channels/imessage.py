@@ -44,6 +44,9 @@ class IMessageConfig(Base):
     group_policy: str = "open"
     reply_to_message: bool = False
     enable_typing_indicator: bool = True
+    react_tapback: str = "love"
+    done_tapback: str = ""
+    react_to_inbound: bool = True
     seed_history_on_start: bool = True
 
 
@@ -145,6 +148,8 @@ class IMessageChannel(BaseChannel):
             return
 
         chat_id = str(msg.chat_id)
+        meta = msg.metadata or {}
+        inbound_message_id = str(meta.get("message_id") or "")
         if self.config.enable_typing_indicator:
             await self._api_start_typing(chat_id)
 
@@ -162,6 +167,11 @@ class IMessageChannel(BaseChannel):
                 result = await self._api_send_file(chat_id, media_path)
                 if result is None:
                     raise RuntimeError(f"iMessage media delivery failed: {media_path}")
+
+            if inbound_message_id and self.config.react_tapback:
+                await self._api_remove_react(chat_id, inbound_message_id, self.config.react_tapback)
+                if self.config.done_tapback:
+                    await self._api_react(chat_id, inbound_message_id, self.config.done_tapback)
         finally:
             if self.config.enable_typing_indicator:
                 await self._api_stop_typing(chat_id)
@@ -243,6 +253,9 @@ class IMessageChannel(BaseChannel):
             marker = f"[{tag}: {local_path}]"
             content = f"{content}\n{marker}" if content else marker
 
+        if message_id and self.config.react_to_inbound and self.config.react_tapback:
+            await self._api_react(address, message_id, self.config.react_tapback)
+
         await self._api_mark_read(address)
         await self._handle_message(
             sender_id=sender,
@@ -313,6 +326,29 @@ class IMessageChannel(BaseChannel):
         except Exception as e:
             logger.warning("Failed to download iMessage attachment {}: {}", att_guid, e)
             return None
+
+    async def _api_react(self, chat: str, message_id: str, tapback: str) -> None:
+        if not self._http or not tapback:
+            return
+        try:
+            await self._http.post(
+                f"/messages/{message_id}/react",
+                json={"chat": chat, "type": tapback},
+            )
+        except Exception as e:
+            logger.debug("iMessage tapback failed: {}", e)
+
+    async def _api_remove_react(self, chat: str, message_id: str, tapback: str) -> None:
+        if not self._http or not tapback:
+            return
+        try:
+            await self._http.request(
+                "DELETE",
+                f"/messages/{message_id}/react",
+                json={"chat": chat, "type": tapback},
+            )
+        except Exception as e:
+            logger.debug("iMessage remove tapback failed: {}", e)
 
     async def _api_mark_read(self, address: str) -> None:
         if not self._http:
