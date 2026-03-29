@@ -28,6 +28,13 @@ QUOTED_PATTERNS = [
     re.compile(r'^on .+ wrote:\s*$', re.IGNORECASE),
 ]
 
+CSS_TAG_PATTERN = r'(?:p|strong|em|ul|ol|li|img|h[1-6]|span|div|hr|b|i|u|a)'
+CSS_NOISE_TOKENS = {
+    'border', 'box-sizing', 'border-width', 'border-style', 'border-color',
+    'currentcolor', 'unset', 'important', 'display', 'margin', 'padding',
+    'font-size', 'font-family', 'line-height', 'text-decoration', 'background',
+}
+
 
 def default_key_paths() -> list[Path]:
     workspace = os.environ.get('NANOBOT_WORKSPACE')
@@ -268,7 +275,7 @@ def looks_like_bad_name(value):
         return True
     if any(token in name.lower() for token in ['<', '>', '@', 'http://', 'https://']):
         return True
-    if re.search(r'\b(ticket|issue|support|service request|request)\b', name, re.IGNORECASE):
+    if re.search(r'\b(ticket|issue|support|service request|request|center|school|church|campus|office)\b', name, re.IGNORECASE):
         return True
     if name.count('|') or name.count('/') > 1:
         return True
@@ -293,10 +300,13 @@ def extract_customer_name(ticket, comments):
         ticket.get('EndUserName'),
         ticket.get('CustomerContactName'),
         ticket.get('RequesterName'),
-        ticket.get('CustomerName'),
+        ticket.get('OpenedByName'),
+        ticket.get('CreatedByName'),
+        ticket.get('TicketCreatorName'),
+        ticket.get('OpenBy'),
     ]
     for comment in reversed(comments):
-        for key in ('EndUserName', 'ContactName', 'CustomerContactName', 'FromName', 'AuthorName', 'Name'):
+        for key in ('EndUserName', 'ContactName', 'CustomerContactName', 'FromName', 'AuthorName', 'Name', 'UserName', 'CreatedByName', 'OpenedByName'):
             if key in comment:
                 candidates.append(comment.get(key))
 
@@ -339,12 +349,25 @@ def strip_signature_and_quotes(text):
     return '\n'.join(cleaned_lines).strip()
 
 
+def looks_like_css_noise(text):
+    lowered = text.lower()
+    if '{' in lowered and '}' in lowered:
+        return True
+    if re.search(rf'{CSS_TAG_PATTERN}(?:\s*,\s*{CSS_TAG_PATTERN}){{2,}}\s*\{{', lowered, re.IGNORECASE):
+        return True
+    tokens = sum(1 for token in CSS_NOISE_TOKENS if token in lowered)
+    return tokens >= 4
+
+
 def clean_comment_text(value):
     text = clean_html_text(value)
+    text = re.sub(rf'(?is){CSS_TAG_PATTERN}(?:\s*,\s*{CSS_TAG_PATTERN}){{2,}}\s*\{{[^{{}}]{{0,2000}}\}}', ' ', text)
     text = strip_signature_and_quotes(text)
     text = re.sub(r'\b(?:cid:|image\d+\.)\S+', ' ', text, flags=re.IGNORECASE)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+    text = re.sub(r'\s+', ' ', text).strip()
+    if looks_like_css_noise(text):
+        return ''
+    return text
 
 
 def summarize_comment(text, limit=220):
