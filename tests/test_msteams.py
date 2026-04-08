@@ -32,6 +32,7 @@ class FakeResponse:
     def __init__(self, payload=None, *, should_raise=False):
         self._payload = payload or {}
         self._should_raise = should_raise
+        self.status = 200
 
     def raise_for_status(self):
         if self._should_raise:
@@ -51,6 +52,13 @@ class FakeHttpClient:
     async def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return FakeResponse(self.payload, should_raise=self.should_raise)
+
+    async def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return FakeResponse(self.payload, should_raise=self.should_raise)
+
+    async def aclose(self):
+        return None
 
 
 @pytest.fixture
@@ -72,8 +80,9 @@ def make_channel(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_activity_personal_message_publishes_and_stores_ref(make_channel, tmp_path):
+async def test_handle_activity_personal_message_publishes_and_stores_ref(make_channel, tmp_path, monkeypatch):
     ch = make_channel()
+    monkeypatch.setattr(msteams_module.time, "time", lambda: 12345.0)
 
     activity = {
         "type": "message",
@@ -108,10 +117,12 @@ async def test_handle_activity_personal_message_publishes_and_stores_ref(make_ch
     assert msg.content == "Hello from Teams"
     assert msg.metadata["msteams"]["conversation_id"] == "conv-123"
     assert "conv-123" in ch._conversation_refs
+    assert ch._conversation_refs["conv-123"].updated_at == 12345.0
 
     saved = json.loads((tmp_path / "state" / "msteams_conversations.json").read_text(encoding="utf-8"))
     assert saved["conv-123"]["conversation_id"] == "conv-123"
     assert saved["conv-123"]["tenant_id"] == "tenant-id"
+    assert saved["conv-123"]["updated_at"] == 12345.0
 
 
 @pytest.mark.asyncio
@@ -262,6 +273,14 @@ def test_sanitize_inbound_text_structures_live_fwdioc_quote_shape(make_channel):
         "User is replying to: Got it. I’ll watch for the exact text reply with quote test and then inspect that turn specifically.\n"
         "User reply: Reply with quote test"
     )
+
+
+def test_normalize_teams_reply_quote_leaves_plain_text_test_phrase_untouched(make_channel):
+    ch = make_channel()
+
+    text = "Normal message ending with Reply with quote test"
+
+    assert ch._normalize_teams_reply_quote(text) == text
 
 
 def test_sanitize_inbound_text_structures_multiline_fwdioc_quote_shape(make_channel):
@@ -417,6 +436,74 @@ async def test_send_raises_delivery_failures_for_retry(make_channel):
 
     with pytest.raises(RuntimeError, match="boom"):
         await ch.send(OutboundMessage(channel="msteams", chat_id="conv-123", content="Reply text"))
+
+
+@pytest.mark.asyncio
+async def test_restart_pre_message_writes_pending_notice_and_sends_to_latest_conversation(make_channel, monkeypatch, tmp_path):
+    ch = make_channel(restartNotifyEnabled=True)
+    fake_http = FakeHttpClient()
+    ch._http = fake_http
+    ch._token = "tok"
+    ch._token_expires_at = 9999999999
+    ch._conversation_refs["older"] = ConversationRef(
+        service_url="https://smba.trafficmanager.net/amer/",
+        conversation_id="older",
+        updated_at=10.0,
+    )
+    ch._conversation_refs["newer"] = ConversationRef(
+        service_url="https://smba.trafficmanager.net/amer/",
+        conversation_id="newer",
+        updated_at=20.0,
+    )
+    monkeypatch.setattr(msteams_module.time, "time", lambda: 500.0)
+
+    await ch._maybe_send_restart_pre_message()
+
+    notice = json.loads((tmp_path / "state" / "msteams_restart_notice.json").read_text(encoding="utf-8"))
+    assert notice["chat_id"] == "newer"
+    assert notice["started_at"] == 500.0
+    assert len(fake_http.calls) == 1
+    url, kwargs = fake_http.calls[0]
+    assert url == "https://smba.trafficmanager.net/amer/v3/conversations/newer/activities"
+    assert kwargs["json"]["text"] == ch.config.restart_notify_pre_message
+
+
+@pytest.mark.asyncio
+async def test_restart_post_message_consumes_pending_notice_and_sends(make_channel, tmp_path):
+    ch = make_channel(restartNotifyEnabled=True)
+    fake_http = FakeHttpClient()
+    ch._http = fake_http
+    ch._token = "tok"
+    ch._token_expires_at = 9999999999
+    ch._conversation_refs["conv-123"] = ConversationRef(
+        service_url="https://smba.trafficmanager.net/amer/",
+        conversation_id="conv-123",
+    )
+    (tmp_path / "state" / "msteams_restart_notice.json").write_text(
+        json.dumps({"chat_id": "conv-123", "started_at": 123.0}),
+        encoding="utf-8",
+    )
+
+    await ch._maybe_send_restart_post_message()
+
+    assert not (tmp_path / "state" / "msteams_restart_notice.json").exists()
+    assert len(fake_http.calls) == 1
+    url, kwargs = fake_http.calls[0]
+    assert url == "https://smba.trafficmanager.net/amer/v3/conversations/conv-123/activities"
+    assert kwargs["json"]["text"] == ch.config.restart_notify_post_message
+
+
+@pytest.mark.asyncio
+async def test_restart_post_message_clears_pending_notice_when_disabled(make_channel, tmp_path):
+    ch = make_channel(restartNotifyEnabled=False)
+    (tmp_path / "state" / "msteams_restart_notice.json").write_text(
+        json.dumps({"chat_id": "conv-123", "started_at": 123.0}),
+        encoding="utf-8",
+    )
+
+    await ch._maybe_send_restart_post_message()
+
+    assert not (tmp_path / "state" / "msteams_restart_notice.json").exists()
 
 
 def _make_test_rsa_jwk(kid: str = "test-kid"):

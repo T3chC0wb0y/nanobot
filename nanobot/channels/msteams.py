@@ -17,6 +17,7 @@ import importlib.util
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
@@ -71,6 +72,7 @@ class ConversationRef:
     activity_id: str | None = None
     conversation_type: str | None = None
     tenant_id: str | None = None
+    updated_at: float | None = None
 
 
 class MSTeamsChannel(BaseChannel):
@@ -103,6 +105,8 @@ class MSTeamsChannel(BaseChannel):
         self._botframework_jwks_expires_at: float = 0.0
         self._refs_path = get_workspace_path() / "state" / "msteams_conversations.json"
         self._refs_path.parent.mkdir(parents=True, exist_ok=True)
+        self._restart_notice_path = get_workspace_path() / "state" / "msteams_restart_notice.json"
+        self._restart_notice_path.parent.mkdir(parents=True, exist_ok=True)
         self._conversation_refs: dict[str, ConversationRef] = self._load_refs()
 
     async def start(self) -> None:
@@ -185,12 +189,15 @@ class MSTeamsChannel(BaseChannel):
             self.config.path,
         )
 
+        await self._maybe_send_restart_post_message()
+
         while self._running:
             await asyncio.sleep(1)
 
     async def stop(self) -> None:
         """Stop the channel."""
         self._running = False
+        await self._maybe_send_restart_pre_message()
         if self._server:
             self._server.shutdown()
             self._server.server_close()
@@ -211,6 +218,14 @@ class MSTeamsChannel(BaseChannel):
         if not ref:
             raise RuntimeError(f"MSTeams conversation ref not found for chat_id={msg.chat_id}")
 
+        await self._send_text_to_ref(ref, msg.content or " ")
+        logger.info("MSTeams message sent to {}", ref.conversation_id)
+
+    async def _send_text_to_ref(self, ref: ConversationRef, text: str) -> None:
+        """Send a plain text message to a stored Teams conversation reference."""
+        if not self._http:
+            raise RuntimeError("MSTeams HTTP client not initialized")
+
         token = await self._get_access_token()
         base_url = f"{ref.service_url.rstrip('/')}/v3/conversations/{ref.conversation_id}/activities"
         use_thread_reply = self.config.reply_in_thread and bool(ref.activity_id)
@@ -221,18 +236,13 @@ class MSTeamsChannel(BaseChannel):
         }
         payload = {
             "type": "message",
-            "text": msg.content or " ",
+            "text": text or " ",
         }
         if use_thread_reply:
             payload["replyToId"] = ref.activity_id
 
-        try:
-            resp = await self._http.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            logger.info("MSTeams message sent to {}", ref.conversation_id)
-        except Exception as e:
-            logger.error("MSTeams send failed: {}", e)
-            raise
+        resp = await self._http.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
 
     async def _handle_activity(self, activity: dict[str, Any]) -> None:
         """Handle inbound Teams/Bot Framework activity."""
@@ -275,6 +285,7 @@ class MSTeamsChannel(BaseChannel):
             activity_id=activity_id or None,
             conversation_type=conversation_type or None,
             tenant_id=str((channel_data.get("tenant") or {}).get("id") or "") or None,
+            updated_at=time.time(),
         )
         self._save_refs()
 
@@ -358,17 +369,19 @@ class MSTeamsChannel(BaseChannel):
                 if quoted and reply:
                     return self._format_reply_with_quote(quoted, reply)
 
-        # Observed compact fallback where the relay flattens everything into one line
-        # and appends the literal reply text marker at the end.
+        # Observed compact fallback where the relay flattens quote and reply into
+        # a single line after the synthetic FWDIOC-BOT prefix.
         compact = re.sub(r"\s+", " ", normalized_newlines).strip()
         if compact.startswith("FWDIOC-BOT "):
             compact = compact[len("FWDIOC-BOT ") :].strip()
-
-        marker = " Reply with quote test"
-        if compact.endswith(marker):
-            quoted = compact[: -len(marker)].strip()
-            reply = marker.strip()
-            return self._format_reply_with_quote(quoted, reply)
+            for boundary in (". ", "! ", "? ", "… "):
+                idx = compact.rfind(boundary)
+                if idx == -1:
+                    continue
+                quoted = compact[: idx + 1].strip()
+                reply = compact[idx + len(boundary) :].strip()
+                if quoted and reply and len(reply) <= 160:
+                    return self._format_reply_with_quote(quoted, reply)
 
         return cleaned
 
@@ -381,6 +394,93 @@ class MSTeamsChannel(BaseChannel):
         if reply:
             return reply
         return quoted
+
+    def _select_restart_target(self) -> tuple[str, ConversationRef] | None:
+        """Select the most recently active Teams conversation for restart notices."""
+        if not self._conversation_refs:
+            return None
+
+        items = list(self._conversation_refs.items())
+        items.sort(key=lambda item: item[1].updated_at or 0.0)
+        chat_id, ref = items[-1]
+        if not ref.service_url or not ref.conversation_id:
+            return None
+        return chat_id, ref
+
+    def _write_restart_notice(self, chat_id: str) -> None:
+        """Persist restart notice state so startup can send the post-restart message."""
+        payload = {
+            "chat_id": chat_id,
+            "started_at": time.time(),
+        }
+        self._restart_notice_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _consume_restart_notice(self) -> dict[str, Any] | None:
+        """Read and clear any pending restart notice state."""
+        if not self._restart_notice_path.exists():
+            return None
+        try:
+            payload = json.loads(self._restart_notice_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Failed to read MSTeams restart notice state: {}", e)
+            payload = None
+        try:
+            self._restart_notice_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Failed to clear MSTeams restart notice state: {}", e)
+        return payload
+
+    async def _maybe_send_restart_pre_message(self) -> None:
+        """Send the configured pre-restart Teams notice and persist pending restart state."""
+        if not self.config.restart_notify_enabled:
+            return
+
+        target = self._select_restart_target()
+        if not target:
+            logger.debug("MSTeams restart notify skipped: no conversation ref available")
+            return
+
+        chat_id, ref = target
+        message = self.config.restart_notify_pre_message.strip()
+        if not message:
+            logger.debug("MSTeams restart notify skipped: pre message empty")
+            return
+
+        self._write_restart_notice(chat_id)
+        try:
+            await self._send_text_to_ref(ref, message)
+            logger.info("MSTeams restart pre-notice sent to {}", ref.conversation_id)
+        except Exception as e:
+            logger.warning("MSTeams restart pre-notice failed: {}", e)
+
+    async def _maybe_send_restart_post_message(self) -> None:
+        """Send the configured post-restart Teams notice when a restart is pending."""
+        notice = self._consume_restart_notice()
+        if not notice:
+            return
+        if not self.config.restart_notify_enabled:
+            logger.debug("MSTeams restart post-notice cleared while restartNotifyEnabled=false")
+            return
+
+        chat_id = str(notice.get("chat_id") or "").strip()
+        if not chat_id:
+            return
+
+        ref = self._conversation_refs.get(chat_id)
+        if not ref:
+            logger.warning("MSTeams restart post-notice skipped: conversation ref missing for {}", chat_id)
+            return
+
+        message = self.config.restart_notify_post_message.strip()
+        if not message:
+            logger.debug("MSTeams restart post-notice skipped: post message empty")
+            return
+
+        try:
+            await self._send_text_to_ref(ref, message)
+            logger.info("MSTeams restart post-notice sent to {}", ref.conversation_id)
+        except Exception as e:
+            logger.warning("MSTeams restart post-notice failed: {}", e)
 
     async def _validate_inbound_auth(self, auth_header: str, activity: dict[str, Any]) -> None:
         """Validate inbound Bot Framework bearer token."""
@@ -426,8 +526,6 @@ class MSTeamsChannel(BaseChannel):
 
     async def _get_botframework_openid_config(self) -> dict[str, Any]:
         """Fetch and cache Bot Framework OpenID configuration."""
-        import time
-
         now = time.time()
         if self._botframework_openid_config and now < self._botframework_openid_config_expires_at:
             return self._botframework_openid_config
@@ -443,8 +541,6 @@ class MSTeamsChannel(BaseChannel):
 
     async def _get_botframework_jwks(self) -> dict[str, Any]:
         """Fetch and cache Bot Framework JWKS."""
-        import time
-
         now = time.time()
         if self._botframework_jwks and now < self._botframework_jwks_expires_at:
             return self._botframework_jwks
@@ -471,7 +567,15 @@ class MSTeamsChannel(BaseChannel):
             data = json.loads(self._refs_path.read_text(encoding="utf-8"))
             out: dict[str, ConversationRef] = {}
             for key, value in data.items():
-                out[key] = ConversationRef(**value)
+                out[key] = ConversationRef(
+                    service_url=value.get("service_url") or "",
+                    conversation_id=value.get("conversation_id") or key,
+                    bot_id=value.get("bot_id"),
+                    activity_id=value.get("activity_id"),
+                    conversation_type=value.get("conversation_type"),
+                    tenant_id=value.get("tenant_id"),
+                    updated_at=value.get("updated_at"),
+                )
             return out
         except Exception as e:
             logger.warning("Failed to load MSTeams conversation refs: {}", e)
@@ -488,6 +592,7 @@ class MSTeamsChannel(BaseChannel):
                     "activity_id": ref.activity_id,
                     "conversation_type": ref.conversation_type,
                     "tenant_id": ref.tenant_id,
+                    "updated_at": ref.updated_at,
                 }
                 for key, ref in self._conversation_refs.items()
             }
@@ -497,8 +602,6 @@ class MSTeamsChannel(BaseChannel):
 
     async def _get_access_token(self) -> str:
         """Fetch an access token for Bot Framework / Azure Bot auth."""
-        import time
-
         now = time.time()
         if self._token and now < self._token_expires_at - 60:
             return self._token

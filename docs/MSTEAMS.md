@@ -8,6 +8,7 @@ This repository includes a built-in `msteams` channel MVP for Microsoft Teams di
 - Tenant-aware OAuth token acquisition
 - Conversation reference persistence for replies
 - Public HTTPS webhook support through a tunnel or reverse proxy
+- Optional restart notifications across gateway stop/start when enabled
 
 ## Not yet included
 
@@ -51,8 +52,9 @@ This repository includes a built-in `msteams` channel MVP for Microsoft Teams di
 - `validateInboundAuth: true` enables inbound Bot Framework bearer-token validation.
 - `validateInboundAuth: false` leaves inbound auth unenforced, which is safer while first validating a new relay, tunnel, or proxy path.
 - When enabled, Nanobot validates the inbound bearer token signature, issuer, audience, token lifetime, and `serviceUrl` claim when present.
-- `restartNotifyEnabled: true` enables optional Teams restart-notification configuration for external wrapper-script driven restarts.
-- `restartNotifyPreMessage` and `restartNotifyPostMessage` control the before/after announcement text used by that external wrapper.
+- `restartNotifyEnabled: true` enables native Teams restart notifications.
+- When restart notifications are enabled, the channel sends `restartNotifyPreMessage` during gateway shutdown and persists a pending marker.
+- On the next successful startup, the channel consumes that marker and sends `restartNotifyPostMessage` back to the same most recently active Teams DM.
 
 ## Setup notes
 
@@ -65,4 +67,4 @@ This repository includes a built-in `msteams` channel MVP for Microsoft Teams di
 nanobot gateway
 ```
 
-5. Optional: if you use an external restart wrapper (for example a script that stops and restarts the gateway), you can enable Teams restart announcements with `restartNotifyEnabled: true` and have the wrapper send `restartNotifyPreMessage` before restart and `restartNotifyPostMessage` after the gateway is back online.
+5. Optional: enable restart announcements with `restartNotifyEnabled: true` if you want Teams users to see a shutdown message before gateway restart and a back-online message after startup completes.
