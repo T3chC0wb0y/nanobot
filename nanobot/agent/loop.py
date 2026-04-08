@@ -22,6 +22,7 @@ from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.restart import RestartTool
 from nanobot.agent.tools.search import GlobTool, GrepTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
@@ -235,7 +236,6 @@ class AgentLoop:
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
         self._session_locks: dict[str, asyncio.Lock] = {}
-        # NANOBOT_MAX_CONCURRENT_REQUESTS: <=0 means unlimited; default 3.
         _max = int(os.environ.get("NANOBOT_MAX_CONCURRENT_REQUESTS", "3"))
         self._concurrency_gate: asyncio.Semaphore | None = (
             asyncio.Semaphore(_max) if _max > 0 else None
@@ -280,6 +280,7 @@ class AgentLoop:
             self.tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy))
             self.tools.register(WebFetchTool(proxy=self.web_config.proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
+        self.tools.register(RestartTool())
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(
@@ -287,7 +288,6 @@ class AgentLoop:
             )
 
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
         if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
             return
         self._mcp_connecting = True
@@ -309,7 +309,6 @@ class AgentLoop:
             self._mcp_connecting = False
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
-        """Update context for all tools that need routing info."""
         for name in ("message", "spawn", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
@@ -317,7 +316,6 @@ class AgentLoop:
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
-        """Remove <think>…</think> blocks that some models embed in content."""
         if not text:
             return None
         from nanobot.utils.helpers import strip_think
@@ -325,9 +323,7 @@ class AgentLoop:
 
     @staticmethod
     def _tool_hint(tool_calls: list) -> str:
-        """Format tool calls as concise hints with smart abbreviation."""
         from nanobot.utils.tool_hints import format_tool_hints
-
         return format_tool_hints(tool_calls)
 
     async def _run_agent_loop(
@@ -342,13 +338,6 @@ class AgentLoop:
         chat_id: str = "direct",
         message_id: str | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
-        """Run the agent iteration loop.
-
-        *on_stream*: called with each content delta during streaming.
-        *on_stream_end(resuming)*: called when a streaming session finishes.
-        ``resuming=True`` means tool calls follow (spinner should restart);
-        ``resuming=False`` means this is the final response.
-        """
         loop_hook = _LoopHook(
             self,
             on_progress=on_progress,
@@ -394,7 +383,6 @@ class AgentLoop:
         return result.final_content, result.tools_used, result.messages
 
     async def run(self) -> None:
-        """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
         logger.info("Agent loop started")
@@ -405,8 +393,6 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
-                # Preserve real task cancellation so shutdown can complete cleanly.
-                # Only ignore non-task CancelledError signals that may leak from integrations.
                 if not self._running or asyncio.current_task().cancelling():
                     raise
                 continue
@@ -426,14 +412,12 @@ class AgentLoop:
             task.add_done_callback(lambda t, k=msg.session_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """Process a message: per-session serial, cross-session concurrent."""
         lock = self._session_locks.setdefault(msg.session_key, asyncio.Lock())
         gate = self._concurrency_gate or nullcontext()
         async with lock, gate:
             try:
                 on_stream = on_stream_end = None
                 if msg.metadata.get("_wants_stream"):
-                    # Split one answer into distinct stream segments.
                     stream_base_id = f"{msg.session_key}:{time.time_ns()}"
                     stream_segment = 0
 
@@ -484,7 +468,6 @@ class AgentLoop:
                 ))
 
     async def close_mcp(self) -> None:
-        """Drain pending background archives, then close MCP connections."""
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._background_tasks.clear()
@@ -492,17 +475,15 @@ class AgentLoop:
             try:
                 await self._mcp_stack.aclose()
             except (RuntimeError, BaseExceptionGroup):
-                pass  # MCP SDK cancel scope cleanup is noisy but harmless
+                pass
             self._mcp_stack = None
 
     def _schedule_background(self, coro) -> None:
-        """Schedule a coroutine as a tracked background task (drained on shutdown)."""
         task = asyncio.create_task(coro)
         self._background_tasks.append(task)
         task.add_done_callback(self._background_tasks.remove)
 
     def stop(self) -> None:
-        """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping")
 
@@ -514,11 +495,8 @@ class AgentLoop:
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
-        """Process a single inbound message and return the response."""
-        # System messages: parse origin from chat_id ("channel:chat_id")
         if msg.channel == "system":
-            channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
-                                else ("cli", msg.chat_id))
+            channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id))
             logger.info("Processing system message from {}", msg.sender_id)
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
@@ -529,20 +507,16 @@ class AgentLoop:
             history = session.get_history(max_messages=0)
             current_role = "assistant" if msg.sender_id == "subagent" else "user"
             messages = self.context.build_messages(
-                history=history,
-                current_message=msg.content, channel=channel, chat_id=chat_id,
-                current_role=current_role,
+                history=history, current_message=msg.content, channel=channel, chat_id=chat_id, current_role=current_role,
             )
             final_content, _, all_msgs = await self._run_agent_loop(
-                messages, session=session, channel=channel, chat_id=chat_id,
-                message_id=msg.metadata.get("message_id"),
+                messages, session=session, channel=channel, chat_id=chat_id, message_id=msg.metadata.get("message_id"),
             )
             self._save_turn(session, all_msgs, 1 + len(history))
             self._clear_runtime_checkpoint(session)
             self.sessions.save(session)
             self._schedule_background(self.consolidator.maybe_consolidate_by_tokens(session))
-            return OutboundMessage(channel=channel, chat_id=chat_id,
-                                  content=final_content or "Background task completed.")
+            return OutboundMessage(channel=channel, chat_id=chat_id, content=final_content or "Background task completed.")
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
@@ -552,7 +526,6 @@ class AgentLoop:
         if self._restore_runtime_checkpoint(session):
             self.sessions.save(session)
 
-        # Slash commands
         raw = msg.content.strip()
         ctx = CommandContext(msg=msg, session=session, key=key, raw=raw, loop=self)
         if result := await self.commands.dispatch(ctx):
@@ -613,55 +586,34 @@ class AgentLoop:
             metadata=meta,
         )
 
-    def _sanitize_persisted_blocks(
-        self,
-        content: list[dict[str, Any]],
-        *,
-        truncate_text: bool = False,
-        drop_runtime: bool = False,
-    ) -> list[dict[str, Any]]:
-        """Strip volatile multimodal payloads before writing session history."""
+    def _sanitize_persisted_blocks(self, content: list[dict[str, Any]], *, truncate_text: bool = False, drop_runtime: bool = False) -> list[dict[str, Any]]:
         filtered: list[dict[str, Any]] = []
         for block in content:
             if not isinstance(block, dict):
                 filtered.append(block)
                 continue
-
-            if (
-                drop_runtime
-                and block.get("type") == "text"
-                and isinstance(block.get("text"), str)
-                and block["text"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG)
-            ):
+            if drop_runtime and block.get("type") == "text" and isinstance(block.get("text"), str) and block["text"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
                 continue
-
-            if (
-                block.get("type") == "image_url"
-                and block.get("image_url", {}).get("url", "").startswith("data:image/")
-            ):
+            if block.get("type") == "image_url" and block.get("image_url", {}).get("url", "").startswith("data:image/"):
                 path = (block.get("_meta") or {}).get("path", "")
                 filtered.append({"type": "text", "text": image_placeholder_text(path)})
                 continue
-
             if block.get("type") == "text" and isinstance(block.get("text"), str):
                 text = block["text"]
                 if truncate_text and len(text) > self.max_tool_result_chars:
                     text = truncate_text(text, self.max_tool_result_chars)
                 filtered.append({**block, "text": text})
                 continue
-
             filtered.append(block)
-
         return filtered
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
             if role == "assistant" and not content and not entry.get("tool_calls"):
-                continue  # skip empty assistant messages — they poison session context
+                continue
             if role == "tool":
                 if isinstance(content, str) and len(content) > self.max_tool_result_chars:
                     entry["content"] = truncate_text(content, self.max_tool_result_chars)
@@ -672,7 +624,6 @@ class AgentLoop:
                     entry["content"] = filtered
             elif role == "user":
                 if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
-                    # Strip the runtime-context prefix, keep only the user text.
                     parts = content.split("\n\n", 1)
                     if len(parts) > 1 and parts[1].strip():
                         entry["content"] = parts[1]
@@ -688,7 +639,6 @@ class AgentLoop:
         session.updated_at = datetime.now()
 
     def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
-        """Persist the latest in-flight turn state into session metadata."""
         session.metadata[self._RUNTIME_CHECKPOINT_KEY] = payload
         self.sessions.save(session)
 
@@ -709,17 +659,13 @@ class AgentLoop:
         )
 
     def _restore_runtime_checkpoint(self, session: Session) -> bool:
-        """Materialize an unfinished turn into session history before a new request."""
         from datetime import datetime
-
         checkpoint = session.metadata.get(self._RUNTIME_CHECKPOINT_KEY)
         if not isinstance(checkpoint, dict):
             return False
-
         assistant_message = checkpoint.get("assistant_message")
         completed_tool_results = checkpoint.get("completed_tool_results") or []
         pending_tool_calls = checkpoint.get("pending_tool_calls") or []
-
         restored_messages: list[dict[str, Any]] = []
         if isinstance(assistant_message, dict):
             restored = dict(assistant_message)
@@ -742,20 +688,15 @@ class AgentLoop:
                 "content": "Error: Task interrupted before this tool finished.",
                 "timestamp": datetime.now().isoformat(),
             })
-
         overlap = 0
         max_overlap = min(len(session.messages), len(restored_messages))
         for size in range(max_overlap, 0, -1):
             existing = session.messages[-size:]
             restored = restored_messages[:size]
-            if all(
-                self._checkpoint_message_key(left) == self._checkpoint_message_key(right)
-                for left, right in zip(existing, restored)
-            ):
+            if all(self._checkpoint_message_key(left) == self._checkpoint_message_key(right) for left, right in zip(existing, restored)):
                 overlap = size
                 break
         session.messages.extend(restored_messages[overlap:])
-
         self._clear_runtime_checkpoint(session)
         return True
 
@@ -769,10 +710,6 @@ class AgentLoop:
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
-        """Process a message directly and return the outbound payload."""
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        return await self._process_message(
-            msg, session_key=session_key, on_progress=on_progress,
-            on_stream=on_stream, on_stream_end=on_stream_end,
-        )
+        return await self._process_message(msg, session_key=session_key, on_progress=on_progress, on_stream=on_stream, on_stream_end=on_stream_end)
