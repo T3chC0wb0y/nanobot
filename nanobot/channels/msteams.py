@@ -341,7 +341,8 @@ class MSTeamsChannel(BaseChannel):
         """Normalize common HTML whitespace/entities from Teams into plain text spacing."""
         normalized = html.unescape(text).replace("&rsquo", "’")
         normalized = normalized.replace("\xa0", " ")
-        return normalized
+        normalized = re.sub(r"[^\S\r\n]+", " ", normalized)
+        return normalized.strip()
 
     def _normalize_teams_reply_quote(self, text: str) -> str:
         """Normalize Teams quoted replies into a compact structured form."""

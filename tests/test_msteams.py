@@ -272,6 +272,17 @@ def test_sanitize_inbound_text_normalizes_nbsp_entities(make_channel):
     assert ch._sanitize_inbound_text(activity) == "Hello from Teams"
 
 
+def test_sanitize_inbound_text_normalizes_leading_space_before_nbsp_entity(make_channel):
+    ch = make_channel()
+
+    activity = {
+        "text": " &nbsp;Hello&nbsp;from&nbsp;Teams",
+        "channelData": {},
+    }
+
+    assert ch._sanitize_inbound_text(activity) == "Hello from Teams"
+
+
 def test_sanitize_inbound_text_normalizes_reply_wrapper_without_reply_metadata(make_channel):
     ch = make_channel()
 
