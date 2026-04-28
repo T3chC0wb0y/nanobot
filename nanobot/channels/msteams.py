@@ -312,6 +312,7 @@ class MSTeamsChannel(BaseChannel):
         """Extract the user-authored text from a Teams activity."""
         text = str(activity.get("text") or "")
         text = self._strip_possible_bot_mention(text)
+        text = self._html_to_text(text)
         text = self._normalize_html_whitespace(text)
 
         channel_data = activity.get("channelData") or {}
@@ -337,11 +338,21 @@ class MSTeamsChannel(BaseChannel):
         cleaned = re.sub(r"(?:\r?\n){3,}", "\n\n", cleaned)
         return cleaned.strip()
 
+    def _html_to_text(self, text: str) -> str:
+        """Convert simple Teams HTML-ish message bodies into readable plain text."""
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        normalized = re.sub(r"<br\s*/?>", "\n", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"</(?:div|p|li|tr|h[1-6])\s*>", "\n", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"<(?:div|p|li|tr|h[1-6])\b[^>]*>", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"<[^>]+>", "", normalized)
+        return html.unescape(normalized).replace("&rsquo", "’")
+
     def _normalize_html_whitespace(self, text: str) -> str:
         """Normalize common HTML whitespace/entities from Teams into plain text spacing."""
         normalized = html.unescape(text).replace("&rsquo", "’")
         normalized = normalized.replace("\xa0", " ")
         normalized = re.sub(r"[^\S\r\n]+", " ", normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
         return normalized.strip()
 
     def _normalize_teams_reply_quote(self, text: str) -> str:

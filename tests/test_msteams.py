@@ -283,6 +283,28 @@ def test_sanitize_inbound_text_normalizes_leading_space_before_nbsp_entity(make_
     assert ch._sanitize_inbound_text(activity) == "Hello from Teams"
 
 
+def test_sanitize_inbound_text_strips_div_wrapper_and_decodes_entities(make_channel):
+    ch = make_channel()
+
+    activity = {
+        "text": "<div>it&#39;s okay. glad you have fun with it</div>",
+        "channelData": {},
+    }
+
+    assert ch._sanitize_inbound_text(activity) == "it's okay. glad you have fun with it"
+
+
+def test_sanitize_inbound_text_preserves_line_breaks_from_html_blocks(make_channel):
+    ch = make_channel()
+
+    activity = {
+        "text": "<div>Hello</div><div>world<br>again</div>",
+        "channelData": {},
+    }
+
+    assert ch._sanitize_inbound_text(activity) == "Hello\nworld\nagain"
+
+
 def test_sanitize_inbound_text_normalizes_reply_wrapper_without_reply_metadata(make_channel):
     ch = make_channel()
 
