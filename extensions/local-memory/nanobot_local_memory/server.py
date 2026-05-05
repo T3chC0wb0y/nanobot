@@ -46,7 +46,7 @@ def create_mcp_server():
         return {"ok": True, "record": record.to_dict()}
 
     @mcp.tool(name="memory.promote")
-    def promote(record_id: str, promoted_by: str = "Bob", note: str | None = None) -> dict[str, Any]:
+    def promote(record_id: str, promoted_by: str | None = None, note: str | None = None) -> dict[str, Any]:
         """Promote a candidate memory after explicit review."""
         record = get_store().promote(record_id, promoted_by=promoted_by, note=note)
         return {"ok": True, "record": record.to_dict()}
@@ -87,7 +87,7 @@ def create_mcp_server():
         return {"ok": True, "count": len(records), "records": records}
 
     @mcp.tool(name="memory.deprecate")
-    def deprecate(record_id: str, reason: str, deprecated_by: str = "Bob") -> dict[str, Any]:
+    def deprecate(record_id: str, reason: str, deprecated_by: str | None = None) -> dict[str, Any]:
         """Mark a memory record obsolete without deleting its audit trail."""
         record = get_store().deprecate(record_id, reason=reason, deprecated_by=deprecated_by)
         return {"ok": True, "record": record.to_dict()}
