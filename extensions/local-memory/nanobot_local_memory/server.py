@@ -21,7 +21,7 @@ def create_mcp_server():
         ),
     )
 
-    @mcp.tool(name="memory.capture_candidate")
+    @mcp.tool(name="memory_capture_candidate")
     def capture_candidate(
         type: str,
         domain: str,
@@ -45,13 +45,13 @@ def create_mcp_server():
         )
         return {"ok": True, "record": record.to_dict()}
 
-    @mcp.tool(name="memory.promote")
+    @mcp.tool(name="memory_promote")
     def promote(record_id: str, promoted_by: str | None = None, note: str | None = None) -> dict[str, Any]:
         """Promote a candidate memory after explicit review."""
         record = get_store().promote(record_id, promoted_by=promoted_by, note=note)
         return {"ok": True, "record": record.to_dict()}
 
-    @mcp.tool(name="memory.search")
+    @mcp.tool(name="memory_search")
     def search(
         query: str,
         domain: str | None = None,
@@ -71,13 +71,13 @@ def create_mcp_server():
         )
         return {"ok": True, "count": len(results), "results": results}
 
-    @mcp.tool(name="memory.get")
+    @mcp.tool(name="memory_get")
     def get(record_id: str) -> dict[str, Any]:
         """Fetch one local memory record by id."""
         record = get_store().get(record_id)
         return {"ok": record is not None, "record": record.to_dict() if record else None}
 
-    @mcp.tool(name="memory.list_recent")
+    @mcp.tool(name="memory_list_recent")
     def list_recent(status: str | None = None, domain: str | None = None, limit: int = 10) -> dict[str, Any]:
         """List recently changed local memory records."""
         records = [
@@ -86,7 +86,7 @@ def create_mcp_server():
         ]
         return {"ok": True, "count": len(records), "records": records}
 
-    @mcp.tool(name="memory.deprecate")
+    @mcp.tool(name="memory_deprecate")
     def deprecate(record_id: str, reason: str, deprecated_by: str | None = None) -> dict[str, Any]:
         """Mark a memory record obsolete without deleting its audit trail."""
         record = get_store().deprecate(record_id, reason=reason, deprecated_by=deprecated_by)
