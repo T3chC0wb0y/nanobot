@@ -1,6 +1,7 @@
 """MCP client: connects to MCP servers and wraps their tools as native nanobot tools."""
 
 import asyncio
+import re
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -23,6 +24,15 @@ _TRANSIENT_EXC_NAMES: frozenset[str] = frozenset((
     "ConnectionAbortedError",
     "ConnectionError",
 ))
+
+_OPENAI_TOOL_NAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def _openai_safe_name(*parts: object) -> str:
+    """Return a tool name that satisfies OpenAI's tool-name pattern."""
+    raw = "_".join(str(part or "") for part in parts)
+    safe = _OPENAI_TOOL_NAME_UNSAFE.sub("_", raw).strip("_")
+    return safe or "mcp_tool"
 
 
 def _is_transient(exc: BaseException) -> bool:
@@ -97,7 +107,7 @@ class MCPToolWrapper(Tool):
     def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
         self._session = session
         self._original_name = tool_def.name
-        self._name = f"mcp_{server_name}_{tool_def.name}"
+        self._name = _openai_safe_name("mcp", server_name, tool_def.name)
         self._description = tool_def.description or tool_def.name
         raw_schema = tool_def.inputSchema or {"type": "object", "properties": {}}
         self._parameters = _normalize_schema_for_openai(raw_schema)
@@ -181,7 +191,7 @@ class MCPResourceWrapper(Tool):
     def __init__(self, session, server_name: str, resource_def, resource_timeout: int = 30):
         self._session = session
         self._uri = resource_def.uri
-        self._name = f"mcp_{server_name}_resource_{resource_def.name}"
+        self._name = _openai_safe_name("mcp", server_name, "resource", resource_def.name)
         desc = resource_def.description or resource_def.name
         self._description = f"[MCP Resource] {desc}\nURI: {self._uri}"
         self._parameters: dict[str, Any] = {
@@ -271,7 +281,7 @@ class MCPPromptWrapper(Tool):
     def __init__(self, session, server_name: str, prompt_def, prompt_timeout: int = 30):
         self._session = session
         self._prompt_name = prompt_def.name
-        self._name = f"mcp_{server_name}_prompt_{prompt_def.name}"
+        self._name = _openai_safe_name("mcp", server_name, "prompt", prompt_def.name)
         desc = prompt_def.description or prompt_def.name
         self._description = (
             f"[MCP Prompt] {desc}\n"
@@ -467,9 +477,11 @@ async def connect_mcp_servers(
             registered_count = 0
             matched_enabled_tools: set[str] = set()
             available_raw_names = [tool_def.name for tool_def in tools.tools]
-            available_wrapped_names = [f"mcp_{name}_{tool_def.name}" for tool_def in tools.tools]
+            available_wrapped_names = [
+                _openai_safe_name("mcp", name, tool_def.name) for tool_def in tools.tools
+            ]
             for tool_def in tools.tools:
-                wrapped_name = f"mcp_{name}_{tool_def.name}"
+                wrapped_name = _openai_safe_name("mcp", name, tool_def.name)
                 if (
                     not allow_all_tools
                     and tool_def.name not in enabled_tools
