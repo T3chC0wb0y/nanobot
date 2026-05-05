@@ -17,10 +17,15 @@ class ContextBuilder:
     """Builds the context (system prompt + messages) for the agent."""
 
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
-    _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
+    _RUNTIME_CONTEXT_TAG = "<nanobot_runtime_context>"
     _MAX_RECENT_HISTORY = 50
     _MAX_HISTORY_CHARS = 32_000  # hard cap on recent history section size
-    _RUNTIME_CONTEXT_END = "[/Runtime Context]"
+    _RUNTIME_CONTEXT_END = "</nanobot_runtime_context>"
+    _RUNTIME_CONTEXT_LABEL = "internal runtime metadata; not user-visible content"
+    _RUNTIME_CONTEXT_RESUME_LABEL = "resumed_session"
+    _RUNTIME_CONTEXT_TIME_LABEL = "current_time"
+    _RUNTIME_CONTEXT_CHANNEL_LABEL = "channel"
+    _RUNTIME_CONTEXT_CHAT_ID_LABEL = "chat_id"
 
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
         self.workspace = workspace
@@ -85,11 +90,20 @@ class ContextBuilder:
         session_summary: str | None = None,
     ) -> str:
         """Build untrusted runtime metadata block for injection before the user message."""
-        lines = [f"Current Time: {current_time_str(timezone)}"]
+        lines = [
+            ContextBuilder._RUNTIME_CONTEXT_LABEL,
+            f"{ContextBuilder._RUNTIME_CONTEXT_TIME_LABEL}={current_time_str(timezone)}",
+        ]
         if channel and chat_id:
-            lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
+            lines += [
+                f"{ContextBuilder._RUNTIME_CONTEXT_CHANNEL_LABEL}={channel}",
+                f"{ContextBuilder._RUNTIME_CONTEXT_CHAT_ID_LABEL}={chat_id}",
+            ]
         if session_summary:
-            lines += ["", "[Resumed Session]", session_summary]
+            lines += [
+                f"{ContextBuilder._RUNTIME_CONTEXT_RESUME_LABEL}=true",
+                session_summary,
+            ]
         return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines) + "\n" + ContextBuilder._RUNTIME_CONTEXT_END
 
     @staticmethod
@@ -144,16 +158,15 @@ class ContextBuilder:
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone, session_summary=session_summary)
         user_content = self._build_user_content(current_message, media)
 
-        # Merge runtime context and user content into a single user message
-        # to avoid consecutive same-role messages that some providers reject.
-        if isinstance(user_content, str):
-            merged = f"{runtime_ctx}\n\n{user_content}"
-        else:
-            merged = [{"type": "text", "text": runtime_ctx}] + user_content
         messages = [
             {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel)},
             *history,
         ]
+
+        if runtime_ctx:
+            messages.append({"role": "system", "content": runtime_ctx})
+
+        merged = user_content
         if messages[-1].get("role") == current_role:
             last = dict(messages[-1])
             last["content"] = self._merge_message_content(last.get("content"), merged)

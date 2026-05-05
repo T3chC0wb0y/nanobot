@@ -32,7 +32,6 @@ from nanobot.utils.runtime import (
 )
 
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
-_PERSISTED_MODEL_ERROR_PLACEHOLDER = "[Assistant reply unavailable due to model error.]"
 _MAX_EMPTY_RETRIES = 2
 _MAX_LENGTH_RECOVERIES = 3
 _MAX_INJECTIONS_PER_TURN = 3
@@ -453,7 +452,6 @@ class AgentRunner:
                 final_content = clean or spec.error_message or _DEFAULT_ERROR_MESSAGE
                 stop_reason = "error"
                 error = final_content
-                self._append_model_error_placeholder(messages)
                 context.final_content = final_content
                 context.error = error
                 context.stop_reason = stop_reason
@@ -742,12 +740,6 @@ class AgentRunner:
             messages[-1] = build_assistant_message(content)
             return
         messages.append(build_assistant_message(content))
-
-    @staticmethod
-    def _append_model_error_placeholder(messages: list[dict[str, Any]]) -> None:
-        if messages and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
-            return
-        messages.append(build_assistant_message(_PERSISTED_MODEL_ERROR_PLACEHOLDER))
 
     def _normalize_tool_result(
         self,

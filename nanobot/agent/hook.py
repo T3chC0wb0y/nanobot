@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from nanobot.agent.local_memory import LocalMemoryCaptureRequest, LocalMemoryInjection
+
 from loguru import logger
 
 from nanobot.providers.base import LLMResponse, ToolCallRequest

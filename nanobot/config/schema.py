@@ -213,12 +213,25 @@ class MyToolConfig(Base):
     allow_set: bool = False  # let `my` modify loop state (read-only if False)
 
 
+class LocalMemoryIntegrationConfig(Base):
+    """Optional local-memory read/write integration behavior."""
+
+    enabled: bool = False
+    server_name: str = "local_memory"
+    search_first: bool = True
+    auto_capture_candidates: bool = False
+    max_search_results: int = Field(default=3, ge=1, le=10)
+    min_query_length: int = Field(default=12, ge=1, le=500)
+    max_candidate_chars: int = Field(default=1200, ge=200, le=8000)
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     my: MyToolConfig = Field(default_factory=MyToolConfig)
+    local_memory: LocalMemoryIntegrationConfig = Field(default_factory=LocalMemoryIntegrationConfig)
     restrict_to_workspace: bool = False  # restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
