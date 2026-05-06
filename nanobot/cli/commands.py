@@ -583,6 +583,8 @@ def serve(
         max_search_results=runtime_config.tools.local_memory.max_search_results,
         min_query_length=runtime_config.tools.local_memory.min_query_length,
         max_candidate_chars=runtime_config.tools.local_memory.max_candidate_chars,
+        max_context_chars=runtime_config.tools.local_memory.max_context_chars,
+        enable_bootstrap_recall=runtime_config.tools.local_memory.enable_bootstrap_recall,
     )
 
     agent_loop = AgentLoop(
@@ -699,6 +701,8 @@ def _run_gateway(
         max_search_results=config.tools.local_memory.max_search_results,
         min_query_length=config.tools.local_memory.min_query_length,
         max_candidate_chars=config.tools.local_memory.max_candidate_chars,
+        max_context_chars=config.tools.local_memory.max_context_chars,
+        enable_bootstrap_recall=config.tools.local_memory.enable_bootstrap_recall,
     )
 
     agent = AgentLoop(
@@ -1032,6 +1036,8 @@ def agent(
         max_search_results=config.tools.local_memory.max_search_results,
         min_query_length=config.tools.local_memory.min_query_length,
         max_candidate_chars=config.tools.local_memory.max_candidate_chars,
+        max_context_chars=config.tools.local_memory.max_context_chars,
+        enable_bootstrap_recall=config.tools.local_memory.enable_bootstrap_recall,
     )
 
     agent_loop = AgentLoop(

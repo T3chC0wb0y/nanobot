@@ -47,6 +47,37 @@ _OPERATIONAL_KEYWORDS = (
     "memory",
 )
 
+_PREFERENCE_KEYWORDS = (
+    "prefer",
+    "preference",
+    "preferred",
+    "usually",
+    "always",
+    "never",
+    "style",
+    "tone",
+    "format",
+    "remember",
+    "call me",
+    "i like",
+    "i want",
+)
+
+_PROJECT_KEYWORDS = (
+    "project",
+    "workspace",
+    "codebase",
+    "repository",
+    "repo",
+    "roadmap",
+    "plan",
+    "milestone",
+    "next step",
+    "todo",
+    "task",
+    "continue",
+)
+
 
 @dataclass(slots=True)
 class LocalMemoryConfig:
@@ -57,6 +88,8 @@ class LocalMemoryConfig:
     max_search_results: int = 3
     min_query_length: int = 12
     max_candidate_chars: int = 1200
+    max_context_chars: int = 1600
+    enable_bootstrap_recall: bool = True
 
 
 @dataclass(slots=True)
@@ -78,16 +111,21 @@ class LocalMemoryCaptureRequest:
 
 
 def has_local_memory_server(tool_registry: ToolRegistry, server_name: str = _LOCAL_MEMORY_SERVER_NAME) -> bool:
-    return tool_registry.has(f"mcp_{server_name}_memory.search")
+    return (
+        tool_registry.has(f"mcp_{server_name}_memory.search")
+        or tool_registry.has(f"mcp_{server_name}_memory.build_context")
+    )
 
 
 def should_search_local_memory(user_text: str, cfg: LocalMemoryConfig) -> bool:
     text = (user_text or "").strip().lower()
     if not cfg.enabled or not cfg.search_first:
         return False
-    if len(text) < cfg.min_query_length:
+    if not text:
         return False
-    return any(keyword in text for keyword in _OPERATIONAL_KEYWORDS)
+    if len(text) < cfg.min_query_length and not _is_bootstrap_recall_query(text):
+        return False
+    return _classify_memory_query(text) is not None
 
 
 async def search_local_memory(
@@ -95,17 +133,40 @@ async def search_local_memory(
     user_text: str,
     cfg: LocalMemoryConfig,
 ) -> LocalMemoryInjection | None:
-    tool_name = f"mcp_{cfg.server_name}_memory.search"
-    if not tool_registry.has(tool_name):
+    build_tool_name = f"mcp_{cfg.server_name}_memory.build_context"
+    search_tool_name = f"mcp_{cfg.server_name}_memory.search"
+
+    query_kind = _classify_memory_query(user_text)
+
+    if tool_registry.has(build_tool_name):
+        params = {
+            "query": _build_context_query(user_text, query_kind),
+            "include_candidates": False,
+            "limit": max(1, cfg.max_search_results),
+            "max_chars": max(200, cfg.max_context_chars),
+        }
+        try:
+            result = await tool_registry.execute(build_tool_name, params)
+        except Exception:
+            logger.exception("Local memory context build failed")
+        else:
+            rendered = _render_context_result(result)
+            if rendered:
+                return LocalMemoryInjection(
+                    heading="Supplemental local-memory recall",
+                    content=rendered,
+                )
+
+    if not tool_registry.has(search_tool_name):
         return None
 
     params = {
-        "query": user_text[:400],
+        "query": _build_context_query(user_text, query_kind),
         "include_candidates": True,
         "limit": max(1, cfg.max_search_results),
     }
     try:
-        result = await tool_registry.execute(tool_name, params)
+        result = await tool_registry.execute(search_tool_name, params)
     except Exception:
         logger.exception("Local memory search failed")
         return None
@@ -114,9 +175,49 @@ async def search_local_memory(
     if not rendered:
         return None
     return LocalMemoryInjection(
-        heading="Relevant local operational memory",
+        heading="Supplemental local-memory recall",
         content=rendered,
     )
+
+
+def _is_bootstrap_recall_query(text: str) -> bool:
+    return any(phrase in text for phrase in ("continue", "pick up", "resume", "what next", "where were we"))
+
+
+def _classify_memory_query(user_text: str) -> str | None:
+    text = (user_text or "").strip().lower()
+    if not text:
+        return None
+    if any(keyword in text for keyword in _PREFERENCE_KEYWORDS):
+        return "preferences"
+    if any(keyword in text for keyword in _PROJECT_KEYWORDS):
+        return "project"
+    if any(keyword in text for keyword in _OPERATIONAL_KEYWORDS):
+        return "operations"
+    if _is_bootstrap_recall_query(text):
+        return "project"
+    return None
+
+
+def _build_context_query(user_text: str, query_kind: str | None) -> str:
+    raw = (user_text or "").strip()
+    text = raw[:400]
+    if query_kind == "preferences":
+        return (
+            f"user preferences, response style, operating preferences, personalization\n"
+            f"{text}"
+        ).strip()
+    if query_kind == "project":
+        return (
+            f"active project context, current plan, next steps, workspace state\n"
+            f"{text}"
+        ).strip()
+    if query_kind == "operations":
+        return (
+            f"operational runbooks, procedures, environment details\n"
+            f"{text}"
+        ).strip()
+    return text
 
 
 def should_capture_candidate(
@@ -155,7 +256,7 @@ def build_capture_request(
         summary=summary,
         content=cleaned,
         tags=tags,
-        metadata={"source": "conversation"},
+        metadata={"source": "conversation", "integration": "nanobot-bolt-on-local-memory"},
     )
 
 
@@ -182,6 +283,24 @@ async def capture_candidate(
     except Exception:
         logger.exception("Local memory candidate capture failed")
 
+
+
+def _render_context_result(result: Any) -> str | None:
+    if result is None:
+        return None
+    if isinstance(result, str):
+        text = result.strip()
+        return text if text else None
+    try:
+        data = result if isinstance(result, dict) else json.loads(str(result))
+    except Exception:
+        return str(result).strip() or None
+    if isinstance(data, dict):
+        context = data.get("context")
+        if isinstance(context, str) and context.strip():
+            return context.strip()
+        return _render_search_result(data)
+    return _render_search_result(data)
 
 def _render_search_result(result: Any) -> str | None:
     if result is None:

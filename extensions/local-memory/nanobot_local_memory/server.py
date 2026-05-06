@@ -71,6 +71,48 @@ def create_mcp_server():
         )
         return {"ok": True, "count": len(results), "results": results}
 
+
+    @mcp.tool(name="memory_build_context")
+    def build_context(
+        query: str,
+        domain: str | None = None,
+        type: str | None = None,
+        include_candidates: bool = False,
+        include_deprecated: bool = False,
+        limit: int = 8,
+        max_chars: int = 2400,
+    ) -> dict[str, Any]:
+        """Build a compact working-context bundle from relevant local memories."""
+        results = get_store().search(
+            query,
+            domain=domain,
+            record_type=type,
+            include_candidates=include_candidates,
+            include_deprecated=include_deprecated,
+            limit=limit,
+        )
+        compact = []
+        remaining = max(200, int(max_chars))
+        for item in results:
+            title = str(item.get("title") or "memory").strip()
+            summary = str(item.get("summary") or item.get("content") or "").strip()
+            summary = " ".join(summary.split())
+            line = f"- [{item.get('id')}] {title}: {summary}".strip()
+            if len(line) > remaining and compact:
+                break
+            if len(line) > remaining:
+                line = line[: max(0, remaining - 3)].rstrip() + "..."
+            compact.append(line)
+            remaining -= len(line) + 1
+            if remaining <= 0:
+                break
+        return {
+            "ok": True,
+            "count": len(results),
+            "results": results,
+            "context": "\n".join(compact),
+        }
+
     @mcp.tool(name="memory_get")
     def get(record_id: str) -> dict[str, Any]:
         """Fetch one local memory record by id."""

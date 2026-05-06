@@ -18,6 +18,8 @@ from nanobot.providers.registry import find_by_name
 runner = CliRunner()
 
 
+
+
 class _StopGatewayError(RuntimeError):
     pass
 
@@ -1485,3 +1487,57 @@ def test_channels_login_requires_channel_name() -> None:
     result = runner.invoke(app, ["channels", "login"])
 
     assert result.exit_code == 2
+
+
+def test_agent_command_passes_extended_local_memory_fields(monkeypatch, tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "localMemory": {
+                        "enabled": True,
+                        "serverName": "memorybox",
+                        "searchFirst": False,
+                        "autoCaptureCandidates": True,
+                        "maxSearchResults": 5,
+                        "minQueryLength": 20,
+                        "maxCandidateChars": 1500,
+                        "maxContextChars": 2400,
+                        "enableBootstrapRecall": False,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    class DummyLoop:
+        def __init__(self, *, hooks=None, **kwargs):
+            assert hooks
+            captured["cfg"] = hooks[0]._config
+
+        async def process_direct(self, *args, **kwargs):
+            return None
+
+        async def close_mcp(self):
+            return None
+
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", DummyLoop)
+    monkeypatch.setattr("nanobot.cli.commands._make_provider", lambda config: object())
+
+    result = runner.invoke(app, ["agent", "-m", "hello", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    cfg = captured["cfg"]
+    assert cfg.enabled is True
+    assert cfg.server_name == "memorybox"
+    assert cfg.search_first is False
+    assert cfg.auto_capture_candidates is True
+    assert cfg.max_search_results == 5
+    assert cfg.min_query_length == 20
+    assert cfg.max_candidate_chars == 1500
+    assert cfg.max_context_chars == 2400
+    assert cfg.enable_bootstrap_recall is False

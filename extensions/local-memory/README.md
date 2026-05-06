@@ -82,3 +82,8 @@ Use this service narrowly:
   }
 }
 ```
+
+## Context bundling
+
+The service also exposes `memory_build_context`, which searches local memory and returns a compact bullet-list context bundle suitable for injecting into a model prompt. This is intended to support low-token retained-context behavior by preferring concise promoted memories over repeatedly re-reading larger notes.
+

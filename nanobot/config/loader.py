@@ -132,4 +132,25 @@ def _migrate_config(data: dict) -> dict:
         else:
             tools.pop("mySet", None)
 
+    # Move legacy flat local-memory keys into tools.localMemory so older configs
+    # keep working as the integration grows more tunables.
+    local_memory_aliases = {
+        "localMemoryEnabled": "enabled",
+        "localMemoryServerName": "serverName",
+        "localMemorySearchFirst": "searchFirst",
+        "localMemoryAutoCaptureCandidates": "autoCaptureCandidates",
+        "localMemoryMaxSearchResults": "maxSearchResults",
+        "localMemoryMinQueryLength": "minQueryLength",
+        "localMemoryMaxCandidateChars": "maxCandidateChars",
+        "localMemoryMaxContextChars": "maxContextChars",
+        "localMemoryEnableBootstrapRecall": "enableBootstrapRecall",
+    }
+    if any(key in tools for key in local_memory_aliases):
+        local_memory_cfg = tools.setdefault("localMemory", {})
+        for legacy_key, nested_key in local_memory_aliases.items():
+            if legacy_key in tools and nested_key not in local_memory_cfg:
+                local_memory_cfg[nested_key] = tools.pop(legacy_key)
+            else:
+                tools.pop(legacy_key, None)
+
     return data

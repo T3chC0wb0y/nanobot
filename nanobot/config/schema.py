@@ -223,6 +223,8 @@ class LocalMemoryIntegrationConfig(Base):
     max_search_results: int = Field(default=3, ge=1, le=10)
     min_query_length: int = Field(default=12, ge=1, le=500)
     max_candidate_chars: int = Field(default=1200, ge=200, le=8000)
+    max_context_chars: int = Field(default=1600, ge=200, le=12000)
+    enable_bootstrap_recall: bool = True
 
 
 class ToolsConfig(Base):

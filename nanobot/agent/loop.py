@@ -704,12 +704,35 @@ class AgentLoop:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._background_tasks.clear()
-        for name, stack in self._mcp_stacks.items():
-            try:
-                await stack.aclose()
-            except (RuntimeError, BaseExceptionGroup):
-                logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
-        self._mcp_stacks.clear()
+        if not self._mcp_stacks:
+            return
+
+        stacks = self._mcp_stacks
+        self._mcp_stacks = {}
+
+        async def _close_all() -> None:
+            for name, stack in stacks.items():
+                try:
+                    await stack.aclose()
+                except (RuntimeError, BaseExceptionGroup) as exc:
+                    text = str(exc)
+                    if "Attempted to exit cancel scope in a different task than it was entered in" in text:
+                        logger.debug(
+                            "MCP server '{}' close hit AnyIO cancel-scope shutdown bug; suppressing", name
+                        )
+                    else:
+                        raise
+
+        task = asyncio.create_task(_close_all())
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            logger.debug("MCP close cancelled; letting deferred cleanup finish in background")
+            await task
+            raise
+        except Exception:
+            logger.debug("MCP deferred cleanup failed", exc_info=True)
+            raise
 
     def _schedule_background(self, coro) -> None:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""

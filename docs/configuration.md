@@ -689,6 +689,55 @@ Use `enabledTools` to register only a subset of tools from an MCP server:
 
 MCP tools are automatically discovered and registered on startup. The LLM can use them alongside built-in tools — no extra configuration needed.
 
+### Local memory via MCP
+
+nanobot can also use an MCP-backed local memory server for lightweight recall and optional memory capture. This stays outside the core agent loop: nanobot just searches the configured MCP server at the start of a run and can optionally save candidate memories after a completed reply.
+
+Configure a `local_memory` MCP server and enable the local-memory hook:
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "local_memory": {
+        "command": "uvx",
+        "args": ["your-local-memory-server"]
+      }
+    },
+    "localMemory": {
+      "enabled": true,
+      "serverName": "local_memory",
+      "searchFirst": true,
+      "enableBootstrapRecall": true,
+      "maxSearchResults": 3,
+      "maxContextChars": 1600,
+      "autoCaptureCandidates": false
+    }
+  }
+}
+```
+
+`tools.localMemory` options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Enable local-memory recall/capture integration. |
+| `serverName` | `"local_memory"` | MCP server name to use for memory tools. |
+| `searchFirst` | `true` | Search memory before the first model iteration when the user message looks preference/project/operations-related. |
+| `enableBootstrapRecall` | `true` | Also allow first-iteration recall even when there is no fresh user text, useful for resumed sessions and “continue” style workflows. |
+| `maxSearchResults` | `3` | Maximum number of memory results to use. |
+| `minQueryLength` | `12` | Minimum user-query length before recall triggers, unless it matches bootstrap-style continuation queries. |
+| `maxCandidateChars` | `1200` | Maximum assistant text length stored in an auto-captured candidate. |
+| `maxContextChars` | `1600` | Maximum recalled memory context injected back into the prompt. |
+| `autoCaptureCandidates` | `false` | Automatically save likely durable facts/preferences as candidate memories after a completed response. |
+
+Expected MCP tools on that server:
+
+- `memory.search` or `memory.build_context` for recall
+- `memory.capture_candidate` for optional candidate capture
+
+If `memory.build_context` is available, nanobot prefers it because it lets the server format compact recall context directly. Otherwise it falls back to `memory.search` and builds a small supplemental system message from the returned results.
+
 
 
 

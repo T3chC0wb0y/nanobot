@@ -223,3 +223,85 @@ def test_load_config_resets_ssrf_whitelist_when_next_config_is_empty(tmp_path) -
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve("ts.local", ["100.100.1.1"])):
         ok, _ = validate_url_target("http://ts.local/api")
         assert not ok
+
+
+def test_load_config_migrates_legacy_local_memory_flat_keys(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "localMemoryEnabled": True,
+                    "localMemoryServerName": "memorybox",
+                    "localMemorySearchFirst": False,
+                    "localMemoryAutoCaptureCandidates": True,
+                    "localMemoryMaxSearchResults": 5,
+                    "localMemoryMinQueryLength": 20,
+                    "localMemoryMaxCandidateChars": 1500,
+                    "localMemoryMaxContextChars": 2400,
+                    "localMemoryEnableBootstrapRecall": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.tools.local_memory.enabled is True
+    assert config.tools.local_memory.server_name == "memorybox"
+    assert config.tools.local_memory.search_first is False
+    assert config.tools.local_memory.auto_capture_candidates is True
+    assert config.tools.local_memory.max_search_results == 5
+    assert config.tools.local_memory.min_query_length == 20
+    assert config.tools.local_memory.max_candidate_chars == 1500
+    assert config.tools.local_memory.max_context_chars == 2400
+    assert config.tools.local_memory.enable_bootstrap_recall is False
+
+
+def test_save_config_rewrites_legacy_local_memory_flat_keys(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "localMemoryEnabled": True,
+                    "localMemoryServerName": "memorybox",
+                    "localMemorySearchFirst": False,
+                    "localMemoryAutoCaptureCandidates": True,
+                    "localMemoryMaxSearchResults": 5,
+                    "localMemoryMinQueryLength": 20,
+                    "localMemoryMaxCandidateChars": 1500,
+                    "localMemoryMaxContextChars": 2400,
+                    "localMemoryEnableBootstrapRecall": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    save_config(config, config_path)
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+    tools = saved["tools"]
+    assert "localMemoryEnabled" not in tools
+    assert "localMemoryServerName" not in tools
+    assert "localMemorySearchFirst" not in tools
+    assert "localMemoryAutoCaptureCandidates" not in tools
+    assert "localMemoryMaxSearchResults" not in tools
+    assert "localMemoryMinQueryLength" not in tools
+    assert "localMemoryMaxCandidateChars" not in tools
+    assert "localMemoryMaxContextChars" not in tools
+    assert "localMemoryEnableBootstrapRecall" not in tools
+    assert tools["localMemory"] == {
+        "enabled": True,
+        "serverName": "memorybox",
+        "searchFirst": False,
+        "autoCaptureCandidates": True,
+        "maxSearchResults": 5,
+        "minQueryLength": 20,
+        "maxCandidateChars": 1500,
+        "maxContextChars": 2400,
+        "enableBootstrapRecall": False,
+    }

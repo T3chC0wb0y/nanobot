@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.local_memory import (
     LocalMemoryConfig,
@@ -10,7 +12,6 @@ from nanobot.agent.local_memory import (
     should_capture_candidate,
     should_search_local_memory,
 )
-from nanobot.agent.messages import build_system_message
 
 
 class LocalMemoryHook(AgentHook):
@@ -27,21 +28,25 @@ class LocalMemoryHook(AgentHook):
         if context.iteration != 1:
             return
         user_text = _latest_user_text(context.messages)
-        if not should_search_local_memory(user_text, self._config):
+        if not user_text and not self._config.enable_bootstrap_recall:
             return
+        if user_text and not should_search_local_memory(user_text, self._config):
+            return
+        if not user_text:
+            user_text = "continue with active project context and user preferences"
         injection = await search_local_memory(tools, user_text, self._config)
         if not injection or not injection.content:
             return
-        context.messages.insert(
-            0,
-            build_system_message(f"{injection.heading}:\n{injection.content}"),
+        _insert_supplemental_system_message(
+            context.messages,
+            f"{injection.heading}:\n{injection.content}",
         )
 
     async def after_iteration(self, context: AgentHookContext) -> None:
         tools = self._tools(context)
         if not self._config.enabled or not has_local_memory_server(tools, self._config.server_name):
             return
-        if context.stop_reason != "done" or not context.final_content:
+        if context.stop_reason != "completed" or not context.final_content:
             return
         user_text = _latest_user_text(context.messages)
         if not should_capture_candidate(user_text, context.final_content, self._config):
@@ -50,6 +55,14 @@ class LocalMemoryHook(AgentHook):
         if request is None:
             return
         await capture_candidate(tools, request, self._config)
+
+
+def _insert_supplemental_system_message(messages: list[dict[str, Any]], content: str) -> None:
+    message = {"role": "system", "content": content}
+    if messages and messages[0].get("role") == "system":
+        messages.insert(1, message)
+        return
+    messages.insert(0, message)
 
 
 def _latest_user_text(messages: list[dict[str, Any]]) -> str:

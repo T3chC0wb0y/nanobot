@@ -65,7 +65,7 @@ def _fake_mcp_module(
             return False
 
     @asynccontextmanager
-    async def _fake_stdio_client(_params: object):
+    async def _fake_stdio_client(_params: object, **_kwargs: object):
         yield object(), object()
 
     @asynccontextmanager
@@ -366,7 +366,7 @@ async def test_connect_mcp_servers_logs_stdio_pollution_hint(
         messages.append(message.format(*args))
 
     @asynccontextmanager
-    async def _broken_stdio_client(_params: object):
+    async def _broken_stdio_client(_params: object, **_kwargs: object):
         raise RuntimeError("Parse error: Unexpected token 'INFO' before JSON-RPC headers")
         yield  # pragma: no cover
 
@@ -400,7 +400,7 @@ async def test_connect_mcp_servers_one_failure_does_not_block_others(
             return False
 
     @asynccontextmanager
-    async def _selective_stdio_client(params: object):
+    async def _selective_stdio_client(params: object, **_kwargs: object):
         if params.command == "bad":
             raise RuntimeError("boom")
         yield params.command, object()
@@ -421,6 +421,95 @@ async def test_connect_mcp_servers_one_failure_does_not_block_others(
 
     assert registry.tool_names == ["mcp_good_demo"]
     assert set(stacks) == {"good"}
+
+
+@pytest.mark.asyncio
+async def test_connect_mcp_servers_local_memory_capture_and_promote(
+    fake_mcp_runtime: dict[str, object | None],
+) -> None:
+    records: dict[str, dict[str, object]] = {}
+
+    async def initialize() -> None:
+        return None
+
+    async def list_tools() -> SimpleNamespace:
+        return SimpleNamespace(
+            tools=[
+                SimpleNamespace(
+                    name="memory_capture_candidate",
+                    description="capture memory",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                SimpleNamespace(
+                    name="memory_promote",
+                    description="promote memory",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+                SimpleNamespace(
+                    name="memory_search",
+                    description="search memory",
+                    inputSchema={"type": "object", "properties": {}},
+                ),
+            ]
+        )
+
+    async def call_tool(name: str, arguments: dict) -> object:
+        if name == "memory_capture_candidate":
+            rid = arguments["record_id"]
+            records[rid] = {
+                "id": rid,
+                "status": "candidate",
+                "title": arguments["title"],
+                "summary": arguments["summary"],
+            }
+            return SimpleNamespace(content=[_FakeTextContent('{"ok": true, "record": {"id": "%s", "status": "candidate"}}' % rid)])
+        if name == "memory_promote":
+            rid = arguments["record_id"]
+            records[rid]["status"] = "promoted"
+            return SimpleNamespace(content=[_FakeTextContent('{"ok": true, "record": {"id": "%s", "status": "promoted"}}' % rid)])
+        if name == "memory_search":
+            query = arguments.get("query", "")
+            matches = [r for r in records.values() if query.lower() in r["title"].lower()]
+            return SimpleNamespace(content=[_FakeTextContent(str(matches))])
+        raise AssertionError(f"unexpected tool: {name}")
+
+    fake_mcp_runtime["session"] = SimpleNamespace(
+        initialize=initialize,
+        list_tools=list_tools,
+        call_tool=call_tool,
+    )
+
+    registry = ToolRegistry()
+    stacks = await connect_mcp_servers(
+        {"local_memory": MCPServerConfig(command="fake")},
+        registry,
+    )
+
+    capture_result = await registry.get("mcp_local_memory_memory_capture_candidate").execute(
+        type="procedure",
+        domain="operations",
+        title="Restart via agent script",
+        summary="Use restart helper after runtime changes.",
+        content="Use restart-by-agent.sh.",
+        record_id="test_restart_record",
+    )
+    promote_result = await registry.get("mcp_local_memory_memory_promote").execute(
+        record_id="test_restart_record",
+        promoted_by="test",
+        note="validated",
+    )
+    search_result = await registry.get("mcp_local_memory_memory_search").execute(
+        query="restart",
+        include_candidates=True,
+        limit=5,
+    )
+
+    for stack in stacks.values():
+        await stack.aclose()
+
+    assert '"status": "candidate"' in capture_result
+    assert '"status": "promoted"' in promote_result
+    assert "test_restart_record" in search_result
 
 
 # ---------------------------------------------------------------------------
