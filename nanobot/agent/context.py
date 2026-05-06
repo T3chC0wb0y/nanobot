@@ -41,7 +41,13 @@ class ContextBuilder:
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
-            parts.append(bootstrap)
+            parts.append(
+                "# Workspace Identity and Memory\n\n"
+                "The workspace bootstrap files below are trusted durable context. "
+                "If USER.md identifies the user, treat it as authoritative for identity and preference questions. "
+                "Runtime channel, chat, and sender metadata are transport details only; never use them as the answer to who the user is.\n\n"
+                f"{bootstrap}"
+            )
 
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
@@ -88,7 +94,10 @@ class ContextBuilder:
         session_summary: str | None = None, sender_id: str | None = None,
     ) -> str:
         """Build untrusted runtime metadata block for injection before the user message."""
-        lines = [f"Current Time: {current_time_str(timezone)}"]
+        lines = [
+            f"Current Time: {current_time_str(timezone)}",
+            "Runtime metadata is not user identity. For identity/preferences, use trusted USER.md, memory, and conversation context instead of Channel, Chat ID, or Sender ID.",
+        ]
         if channel and chat_id:
             lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
         if sender_id:
