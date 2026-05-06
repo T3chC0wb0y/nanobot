@@ -280,8 +280,6 @@ class AgentRunner:
                 assistant_message = build_assistant_message(
                     response.content or "",
                     tool_calls=[tc.to_openai_tool_call() for tc in response.tool_calls],
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
                 )
                 messages.append(assistant_message)
                 tools_used.extend(tc.name for tc in response.tool_calls)
@@ -415,8 +413,6 @@ class AgentRunner:
                         await hook.on_stream_end(context, resuming=True)
                     messages.append(build_assistant_message(
                         clean,
-                        reasoning_content=response.reasoning_content,
-                        thinking_blocks=response.thinking_blocks,
                     ))
                     messages.append(build_length_recovery_message())
                     await hook.after_iteration(context)
@@ -426,8 +422,6 @@ class AgentRunner:
             if response.finish_reason != "error" and not is_blank_text(clean):
                 assistant_message = build_assistant_message(
                     clean,
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
                 )
 
             # Check for mid-turn injections BEFORE signaling stream end.

@@ -1029,7 +1029,9 @@ class AgentLoop:
 
     def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
         """Persist the latest in-flight turn state into session metadata."""
-        session.metadata[self._RUNTIME_CHECKPOINT_KEY] = payload
+        checkpoint = dict(payload)
+        checkpoint["resume_summary"] = self._build_resume_summary(checkpoint)
+        session.metadata[self._RUNTIME_CHECKPOINT_KEY] = checkpoint
         self.sessions.save(session)
 
     def _mark_pending_user_turn(self, session: Session) -> None:
@@ -1050,9 +1052,55 @@ class AgentLoop:
             message.get("tool_call_id"),
             message.get("name"),
             message.get("tool_calls"),
-            message.get("reasoning_content"),
-            message.get("thinking_blocks"),
         )
+
+    @staticmethod
+    def _build_resume_summary(checkpoint: dict[str, Any]) -> str:
+        """Create a short sanitized summary for restart continuity."""
+        phase = str(checkpoint.get("phase") or "unknown")
+        iteration = checkpoint.get("iteration")
+        assistant_message = checkpoint.get("assistant_message")
+        completed_tool_results = checkpoint.get("completed_tool_results") or []
+        pending_tool_calls = checkpoint.get("pending_tool_calls") or []
+
+        summary_parts: list[str] = [f"phase={phase}"]
+        if iteration is not None:
+            summary_parts.append(f"iteration={iteration}")
+
+        if isinstance(assistant_message, dict):
+            tool_calls = assistant_message.get("tool_calls") or []
+            content = str(assistant_message.get("content") or "").strip()
+            if tool_calls:
+                summary_parts.append(f"assistant_tool_calls={len(tool_calls)}")
+            elif content:
+                compact = " ".join(content.split())
+                summary_parts.append(f"assistant={compact[:160]}")
+
+        if completed_tool_results:
+            tool_names = [
+                str(item.get("name") or "tool")
+                for item in completed_tool_results
+                if isinstance(item, dict)
+            ]
+            if tool_names:
+                summary_parts.append(
+                    "completed_tools=" + ",".join(tool_names[:6])
+                )
+                if len(tool_names) > 6:
+                    summary_parts.append(f"completed_tool_count={len(tool_names)}")
+
+        if pending_tool_calls:
+            pending_names = [
+                str(((item.get("function") or {}).get("name")) or "tool")
+                for item in pending_tool_calls
+                if isinstance(item, dict)
+            ]
+            if pending_names:
+                summary_parts.append("pending_tools=" + ",".join(pending_names[:6]))
+                if len(pending_names) > 6:
+                    summary_parts.append(f"pending_tool_count={len(pending_names)}")
+
+        return " | ".join(summary_parts)
 
     def _restore_runtime_checkpoint(self, session: Session) -> bool:
         """Materialize an unfinished turn into session history before a new request."""
@@ -1062,6 +1110,7 @@ class AgentLoop:
         if not isinstance(checkpoint, dict):
             return False
 
+        checkpoint["resume_summary"] = self._build_resume_summary(checkpoint)
         assistant_message = checkpoint.get("assistant_message")
         completed_tool_results = checkpoint.get("completed_tool_results") or []
         pending_tool_calls = checkpoint.get("pending_tool_calls") or []
@@ -1069,8 +1118,11 @@ class AgentLoop:
         restored_messages: list[dict[str, Any]] = []
         if isinstance(assistant_message, dict):
             restored = dict(assistant_message)
+            restored.pop("reasoning_content", None)
+            restored.pop("thinking_blocks", None)
             restored.setdefault("timestamp", datetime.now().isoformat())
-            restored_messages.append(restored)
+            if restored.get("content") or restored.get("tool_calls"):
+                restored_messages.append(restored)
         for message in completed_tool_results:
             if isinstance(message, dict):
                 restored = dict(message)
@@ -1106,6 +1158,18 @@ class AgentLoop:
 
         self._clear_pending_user_turn(session)
         self._clear_runtime_checkpoint(session)
+        return bool(restored_messages)
+
+    def clear_runtime_resume_state(self, session_key: str) -> bool:
+        """Drop stale pending-turn metadata for a session without deleting message history."""
+        session = self.sessions.get_or_create(session_key)
+        had_checkpoint = self._RUNTIME_CHECKPOINT_KEY in session.metadata
+        had_pending = bool(session.metadata.get(self._PENDING_USER_TURN_KEY))
+        if not had_checkpoint and not had_pending:
+            return False
+        self._clear_runtime_checkpoint(session)
+        self._clear_pending_user_turn(session)
+        self.sessions.save(session)
         return True
 
     def _restore_pending_user_turn(self, session: Session) -> bool:

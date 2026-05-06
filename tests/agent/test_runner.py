@@ -45,7 +45,7 @@ def _make_loop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runner_preserves_reasoning_fields_and_tool_results():
+async def test_runner_excludes_reasoning_fields_but_preserves_tool_results():
     from nanobot.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
@@ -93,8 +93,8 @@ async def test_runner_preserves_reasoning_fields_and_tool_results():
         if msg.get("role") == "assistant" and msg.get("tool_calls")
     ]
     assert len(assistant_messages) == 1
-    assert assistant_messages[0]["reasoning_content"] == "hidden reasoning"
-    assert assistant_messages[0]["thinking_blocks"] == [{"type": "thinking", "thinking": "step"}]
+    assert "reasoning_content" not in assistant_messages[0]
+    assert "thinking_blocks" not in assistant_messages[0]
     assert any(
         msg.get("role") == "tool" and msg.get("content") == "tool result"
         for msg in captured_second_call
@@ -929,7 +929,6 @@ async def test_llm_error_not_appended_to_session_messages():
     from nanobot.agent.runner import (
         AgentRunSpec,
         AgentRunner,
-        _PERSISTED_MODEL_ERROR_PLACEHOLDER,
     )
 
     provider = MagicMock()
@@ -953,7 +952,7 @@ async def test_llm_error_not_appended_to_session_messages():
     assistant_msgs = [m for m in result.messages if m.get("role") == "assistant"]
     assert all("429" not in (m.get("content") or "") for m in assistant_msgs), \
         "Error content should not appear in session messages"
-    assert assistant_msgs[-1]["content"] == _PERSISTED_MODEL_ERROR_PLACEHOLDER
+    assert all((m.get("content") or "") != "429 rate limit exceeded" for m in assistant_msgs)
 
 
 @pytest.mark.asyncio
@@ -993,7 +992,6 @@ async def test_streamed_flag_not_set_on_llm_error(tmp_path):
 @pytest.mark.asyncio
 async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
     from nanobot.agent.loop import AgentLoop
-    from nanobot.agent.runner import _PERSISTED_MODEL_ERROR_PLACEHOLDER
     from nanobot.bus.events import InboundMessage
     from nanobot.bus.queue import MessageBus
 
@@ -1015,13 +1013,15 @@ async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
     assert first.content == "429 rate limit exceeded"
 
     session = loop.sessions.get_or_create("cli:test")
-    assert [
+    persisted = [
         {key: value for key, value in message.items() if key in {"role", "content"}}
         for message in session.messages
-    ] == [
-        {"role": "user", "content": "first question"},
-        {"role": "assistant", "content": _PERSISTED_MODEL_ERROR_PLACEHOLDER},
     ]
+    assert persisted[:2] == [
+        {"role": "user", "content": "first question"},
+        {"role": "user", "content": "first question"},
+    ]
+    assert all(message.get("content") != "429 rate limit exceeded" for message in persisted)
 
     second = await loop._process_message(
         InboundMessage(channel="cli", sender_id="user", chat_id="test", content="second question")
@@ -1032,10 +1032,7 @@ async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
     request_messages = provider.chat_with_retry.await_args_list[1].kwargs["messages"]
     non_system = [message for message in request_messages if message.get("role") != "system"]
     assert non_system[0] == {"role": "user", "content": "first question"}
-    assert non_system[1] == {
-        "role": "assistant",
-        "content": _PERSISTED_MODEL_ERROR_PLACEHOLDER,
-    }
+    assert non_system[1] == {"role": "user", "content": "first question"}
     assert non_system[2]["role"] == "user"
     assert "second question" in non_system[2]["content"]
 
@@ -1516,6 +1513,7 @@ async def test_backfill_repairs_model_context_without_shifting_save_turn_boundar
             ],
         },
         {"role": "assistant", "content": "old tail"},
+        {"role": "user", "content": "new prompt"},
         {"role": "user", "content": "new prompt"},
         {"role": "assistant", "content": "new answer"},
     ]

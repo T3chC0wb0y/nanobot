@@ -173,7 +173,7 @@ def test_empty_session_history():
     assert history == []
 
 
-def test_get_history_preserves_reasoning_content():
+def test_get_history_drops_reasoning_content():
     session = Session(key="test:reasoning")
     session.messages.append({"role": "user", "content": "hi"})
     session.messages.append({
@@ -186,11 +186,7 @@ def test_get_history_preserves_reasoning_content():
 
     assert history == [
         {"role": "user", "content": "hi"},
-        {
-            "role": "assistant",
-            "content": "done",
-            "reasoning_content": "hidden chain of thought",
-        },
+        {"role": "assistant", "content": "done"},
     ]
 
 

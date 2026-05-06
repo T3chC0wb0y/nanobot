@@ -233,7 +233,7 @@ class TestSubagentCancellation:
         assert await mgr.cancel_by_session("nonexistent") == 0
 
     @pytest.mark.asyncio
-    async def test_subagent_preserves_reasoning_fields_in_tool_turn(self, monkeypatch, tmp_path):
+    async def test_subagent_excludes_reasoning_fields_in_tool_turn(self, monkeypatch, tmp_path):
         from nanobot.agent.subagent import SubagentManager
         from nanobot.bus.queue import MessageBus
         from nanobot.providers.base import LLMResponse, ToolCallRequest
@@ -279,8 +279,8 @@ class TestSubagentCancellation:
             if msg.get("role") == "assistant" and msg.get("tool_calls")
         ]
         assert len(assistant_messages) == 1
-        assert assistant_messages[0]["reasoning_content"] == "hidden reasoning"
-        assert assistant_messages[0]["thinking_blocks"] == [{"type": "thinking", "thinking": "step"}]
+        assert "reasoning_content" not in assistant_messages[0]
+        assert "thinking_blocks" not in assistant_messages[0]
 
     @pytest.mark.asyncio
     async def test_subagent_exec_tool_not_registered_when_disabled(self, tmp_path):

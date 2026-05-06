@@ -15,47 +15,58 @@ from loguru import logger
 
 
 def strip_think(text: str) -> str:
-    """Remove thinking blocks, unclosed trailing tags, and tokenizer-level
-    template leaks occasionally emitted by some models (notably Gemma 4's
-    Ollama renderer).
+    """Remove hidden-thinking/template leaks from model-visible text.
 
     Covers:
       1. Well-formed `<think>...</think>` and `<thought>...</thought>` blocks.
       2. Streaming prefixes where the block is never closed.
-      3. *Malformed* opening tags missing the `>` — e.g. `<think广场…`. The
-         model sometimes emits the tag name directly followed by user-facing
-         content with no delimiter; without this step the literal `<think`
-         leaks into the rendered message.
-      4. Harmony-style channel markers like `<channel|>` / `<|channel|>`
-         **at the start of the text** — conservative to avoid eating
-         explanatory prose that mentions these tokens.
-      5. Orphan closing tags `</think>` / `</thought>` **at the very start
-         or end of the text** only, for the same reason.
+      3. Malformed opening tags missing the `>` — e.g. `<think广场…`.
+      4. Edge-only harmony-style channel markers like `<channel|>`.
+      5. Edge-only orphan closing tags like `</think>`.
+      6. Internal runtime-context envelopes such as
+         `<nanobot_runtime_context>...</nanobot_runtime_context>`.
+      7. Raw tool-protocol leakage such as `Call tool request:` lines and
+         adjacent fenced JSON payloads when they appear as standalone protocol
+         output rather than normal prose.
 
-    Since this is also applied before persisting to history (memory.py),
-    the edge-only stripping of (4) and (5) is deliberate: stripping those
-    tokens mid-text would silently rewrite any message where a user or the
-    assistant discusses the tokens themselves.
+    The edge-only handling for some markers is deliberate to avoid silently
+    rewriting ordinary explanatory text that merely discusses these tokens.
     """
-    # Well-formed blocks first.
+    # Internal runtime-context envelopes first: if leaked, drop them entirely.
+    text = re.sub(
+        r"<nanobot_runtime_context>[\s\S]*?</nanobot_runtime_context>",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"^\s*<nanobot_runtime_context>[\s\S]*$", "", text, flags=re.IGNORECASE)
+
+    # Well-formed think/thought blocks.
     text = re.sub(r"<think>[\s\S]*?</think>", "", text)
     text = re.sub(r"^\s*<think>[\s\S]*$", "", text)
     text = re.sub(r"<thought>[\s\S]*?</thought>", "", text)
     text = re.sub(r"^\s*<thought>[\s\S]*$", "", text)
-    # Malformed opening tags: `<think` / `<thought` where the next char is
-    # NOT one that could continue a valid tag / identifier name. Explicitly
-    # listing ASCII tag-name chars (letters, digits, `_`, `-`, `:`) plus
-    # `>` / `/` — we can't use `\w` here because in Python's default
-    # Unicode regex mode it matches CJK characters too, which would defeat
-    # the primary fix for `<think广场…` leaks.
+
+    # Malformed opening tags: `<think` / `<thought` where the next char is not
+    # one that could continue a valid tag / identifier name.
     text = re.sub(r"<think(?![A-Za-z0-9_\-:>/])", "", text)
     text = re.sub(r"<thought(?![A-Za-z0-9_\-:>/])", "", text)
+
+    # Standalone raw tool protocol leakage.
+    text = re.sub(
+        r"(?is)(?:^|\n)\s*Call tool request:\s*```(?:json)?\s*[\s\S]*?```\s*",
+        "\n",
+        text,
+    )
+    text = re.sub(r"(?im)^\s*Call tool request:\s*$", "", text)
+
     # Edge-only orphan closing tags (start or end of text).
     text = re.sub(r"^\s*</think>\s*", "", text)
     text = re.sub(r"\s*</think>\s*$", "", text)
     text = re.sub(r"^\s*</thought>\s*", "", text)
     text = re.sub(r"\s*</thought>\s*$", "", text)
-    # Edge-only channel markers (harmony / Gemma 4 variant leaks).
+
+    # Edge-only channel markers (harmony / Gemma-style variant leaks).
     text = re.sub(r"^\s*<\|?channel\|?>\s*", "", text)
     return text.strip()
 
@@ -310,17 +321,17 @@ def split_message(content: str, max_len: int = 2000) -> list[str]:
 def build_assistant_message(
     content: str | None,
     tool_calls: list[dict[str, Any]] | None = None,
-    reasoning_content: str | None = None,
-    thinking_blocks: list[dict] | None = None,
 ) -> dict[str, Any]:
-    """Build a provider-safe assistant message with optional reasoning fields."""
+    """Build a provider-safe assistant message for session history.
+
+    Durable history should contain only normal assistant content plus tool calls.
+    Provider-private reasoning artifacts are intentionally excluded from
+    persistence because they may contain hidden/internal prompt material such as
+    runtime context, tool protocol text, or opaque chain-of-thought-like data.
+    """
     msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
     if tool_calls:
         msg["tool_calls"] = tool_calls
-    if reasoning_content is not None or thinking_blocks:
-        msg["reasoning_content"] = reasoning_content if reasoning_content is not None else ""
-    if thinking_blocks:
-        msg["thinking_blocks"] = thinking_blocks
     return msg
 
 

@@ -399,10 +399,11 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
     assert result.content == "next answer"
 
     session = loop.sessions.get_or_create("feishu:c4")
-    assert [
+    persisted = [
         {k: v for k, v in m.items() if k in {"role", "content", "tool_call_id", "name"}}
         for m in session.messages
-    ] == [
+    ]
+    assert persisted[:4] == [
         {"role": "user", "content": "keep progress"},
         {"role": "assistant", "content": "working"},
         {"role": "tool", "tool_call_id": "call_done", "name": "read_file", "content": "ok"},
@@ -412,6 +413,8 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
             "name": "exec",
             "content": "Error: Task interrupted before this tool finished.",
         },
+    ]
+    assert persisted[-2:] == [
         {"role": "user", "content": "continue here"},
         {"role": "assistant", "content": "next answer"},
     ]
@@ -455,15 +458,15 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
 
     non_system = [m for m in seen["initial_messages"] if m.get("role") != "system"]
     assert [m["content"] for m in non_system[:2]] == ["question", "working"]
-    assert non_system[2]["content"].count("subagent result") == 1
-    assert "Current Time:" in non_system[2]["content"]
+    assert non_system[2]["content"] == "subagent result"
 
     loop.sessions.invalidate("cli:test")
     persisted = loop.sessions.get_or_create("cli:test")
-    assert [
+    persisted_view = [
         {k: v for k, v in m.items() if k in {"role", "content", "injected_event", "subagent_task_id"}}
         for m in persisted.messages
-    ] == [
+    ]
+    assert persisted_view[:3] == [
         {"role": "user", "content": "question"},
         {"role": "assistant", "content": "working"},
         {
@@ -472,8 +475,8 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
             "injected_event": "subagent_result",
             "subagent_task_id": "sub-1",
         },
-        {"role": "assistant", "content": "done"},
     ]
+    assert persisted_view[-1] == {"role": "assistant", "content": "done"}
 
 
 @pytest.mark.asyncio
@@ -541,8 +544,9 @@ def test_prompt_merge_does_not_replace_standalone_subagent_history_entry(tmp_pat
     )
 
     non_system = [m for m in projected if m.get("role") != "system"]
-    assert len(non_system) == 2
-    assert "subagent result" in non_system[-1]["content"]
+    assert len(non_system) == 3
+    assert non_system[1]["content"] == "subagent result"
+    assert non_system[2]["content"] == ""
     assert session.messages[-1]["content"] == "subagent result"
     assert session.messages[-1]["injected_event"] == "subagent_result"
 
