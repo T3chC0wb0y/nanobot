@@ -1,0 +1,12 @@
+[project]
+name = "nanobot-local-memory"
+version = "0.1.0"
+description = "Local SQLite memory MCP service for Nanobot"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp[cli]>=1.8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
