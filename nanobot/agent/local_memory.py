@@ -18,8 +18,6 @@ from nanobot.agent.tools.registry import ToolRegistry
 
 
 _LOCAL_MEMORY_SERVER_NAME = "local_memory"
-_SEARCH_TOOL = f"mcp_{_LOCAL_MEMORY_SERVER_NAME}_memory.search"
-_CAPTURE_TOOL = f"mcp_{_LOCAL_MEMORY_SERVER_NAME}_memory.capture_candidate"
 
 _OPERATIONAL_KEYWORDS = (
     "runbook",
@@ -69,11 +67,14 @@ class LocalMemoryInjection:
 
 @dataclass(slots=True)
 class LocalMemoryCaptureRequest:
-    title: str
-    summary: str
-    content: str
+    type: str = "procedure"
+    domain: str = "operations"
+    title: str = ""
+    summary: str = ""
+    content: str = ""
     tags: list[str] = field(default_factory=list)
-    source: str = "conversation"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    record_id: str | None = None
 
 
 def has_local_memory_server(tool_registry: ToolRegistry, server_name: str = _LOCAL_MEMORY_SERVER_NAME) -> bool:
@@ -100,6 +101,7 @@ async def search_local_memory(
 
     params = {
         "query": user_text[:400],
+        "include_candidates": True,
         "limit": max(1, cfg.max_search_results),
     }
     try:
@@ -147,10 +149,13 @@ def build_capture_request(
     title = _derive_title(user_text, cleaned)
     tags = _derive_tags(user_text, cleaned)
     return LocalMemoryCaptureRequest(
+        type=_derive_type(user_text, cleaned),
+        domain=_derive_domain(user_text, cleaned),
         title=title,
         summary=summary,
         content=cleaned,
         tags=tags,
+        metadata={"source": "conversation"},
     )
 
 
@@ -163,11 +168,14 @@ async def capture_candidate(
     if not tool_registry.has(tool_name):
         return
     params = {
+        "type": request.type,
+        "domain": request.domain,
         "title": request.title,
         "summary": request.summary,
         "content": request.content,
         "tags": request.tags,
-        "source": request.source,
+        "metadata": request.metadata,
+        "record_id": request.record_id,
     }
     try:
         await tool_registry.execute(tool_name, params)
@@ -239,6 +247,26 @@ def _derive_title(user_text: str, assistant_text: str) -> str:
     if len(base) > 80:
         base = base[:77].rstrip() + "..."
     return base
+
+
+def _derive_type(user_text: str, assistant_text: str) -> str:
+    haystack = f"{user_text} {assistant_text}".lower()
+    if any(word in haystack for word in ("policy", "approval", "rule")):
+        return "policy"
+    if any(word in haystack for word in ("architecture", "design", "decision")):
+        return "decision"
+    if any(word in haystack for word in ("fact", "host", "path", "port", "url", "workspace")):
+        return "fact"
+    return "procedure"
+
+
+def _derive_domain(user_text: str, assistant_text: str) -> str:
+    haystack = f"{user_text} {assistant_text}".lower()
+    if any(word in haystack for word in ("graphify", "repo", "branch", "workspace", "git")):
+        return "engineering"
+    if any(word in haystack for word in ("microsoft", "exchange", "sharepoint", "teams", "atera")):
+        return "it-ops"
+    return "operations"
 
 
 def _derive_tags(user_text: str, assistant_text: str) -> list[str]:
