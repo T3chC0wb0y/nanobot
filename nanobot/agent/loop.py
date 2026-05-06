@@ -1478,6 +1478,14 @@ class AgentLoop:
                     if not filtered:
                         continue
                     entry["content"] = filtered
+            elif role == "system":
+                if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
+                    continue
+                if isinstance(content, list):
+                    filtered = self._sanitize_persisted_blocks(content, drop_runtime=True)
+                    if not filtered:
+                        continue
+                    entry["content"] = filtered
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
             if role == "assistant":

@@ -48,6 +48,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nanobot import __logo__, __version__
+from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
 
 
@@ -71,6 +72,8 @@ class SafeFileHistory(FileHistory):
     """
 
     def store_string(self, string: str) -> None:
+        if ContextBuilder.contains_runtime_context_wrapper(string):
+            string = ContextBuilder._strip_runtime_context_wrapper(string).strip()
         super().store_string(_sanitize_surrogates(string))
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
 from nanobot.config.paths import get_workspace_path, is_default_workspace
@@ -1339,6 +1342,11 @@ def agent(
                             bot_name=config.agents.defaults.bot_name,
                             bot_icon=config.agents.defaults.bot_icon,
                         )
+
+                        if ContextBuilder.contains_runtime_context_wrapper(user_input):
+                            user_input = ContextBuilder._strip_runtime_context_wrapper(user_input).strip()
+                            if not user_input:
+                                continue
 
                         await bus.publish_inbound(InboundMessage(
                             channel=cli_channel,

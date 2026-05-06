@@ -823,6 +823,20 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
         {k: v for k, v in m.items() if k in {"role", "content", "tool_call_id", "name"}}
         for m in session.messages
     ]
+    assert saved[-1] == {"role": "assistant", "content": "next answer"}
+    assert {"role": "user", "content": "continue here"} in saved
+    assert [m for m in saved if m.get("role") == "system"] == []
+    assert saved[:4] == [
+        {"role": "user", "content": "keep progress"},
+        {"role": "assistant", "content": "working"},
+        {"role": "tool", "tool_call_id": "call_done", "name": "read_file", "content": "ok"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_pending",
+            "name": "exec",
+            "content": "Error: Task interrupted before this tool finished.",
+        },
+    ]
 
     assert {"role": "user", "content": "keep progress"} in saved
     assert {"role": "assistant", "content": "working"} in saved
@@ -837,6 +851,14 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
     assert saved[-1] == {"role": "assistant", "content": "next answer"}
     assert AgentLoop._PENDING_USER_TURN_KEY not in session.metadata
     assert AgentLoop._RUNTIME_CHECKPOINT_KEY not in session.metadata
+    for persisted in session.messages:
+        content = str(persisted.get("content", ""))
+        assert "[Runtime Context" not in content
+        assert "[/Runtime Context]" not in content
+        assert "Current Time:" not in content
+        assert "Channel:" not in content
+        assert "Chat ID:" not in content
+        assert "[Resumed Session]" not in content
 
 
 @pytest.mark.asyncio
@@ -899,11 +921,13 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
         "injected_event": "subagent_result",
         "subagent_task_id": "sub-1",
     }
-    assert saved[3]["role"] == "system"
-    assert "Current Time:" in saved[3]["content"]
-    assert "Channel: cli" in saved[3]["content"]
-    assert "Sender ID: subagent" in saved[3]["content"]
+    assert [m for m in saved if m.get("role") == "system"] == []
     assert saved[-1] == {"role": "assistant", "content": "done"}
+    for persisted_message in saved:
+        content = str(persisted_message.get("content", ""))
+        assert "Current Time:" not in content
+        assert "Channel: cli" not in content
+        assert "Sender ID: subagent" not in content
 
 
 @pytest.mark.asyncio
