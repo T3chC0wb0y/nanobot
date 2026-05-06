@@ -426,10 +426,17 @@ async def connect_mcp_servers(
                     return name, None
 
             if transport_type == "stdio":
+                from pathlib import Path
+
                 params = StdioServerParameters(
                     command=cfg.command, args=cfg.args, env=cfg.env or None
                 )
-                read, write = await server_stack.enter_async_context(stdio_client(params))
+                errlog_path = Path.home() / ".nanobot" / "logs" / "agent.log"
+                errlog_path.parent.mkdir(parents=True, exist_ok=True)
+                with errlog_path.open("a", encoding="utf-8") as errlog:
+                    read, write = await server_stack.enter_async_context(
+                        stdio_client(params, errlog=errlog)
+                    )
             elif transport_type == "sse":
 
                 def httpx_client_factory(
