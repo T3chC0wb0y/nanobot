@@ -62,7 +62,7 @@ def test_system_prompt_reflects_current_dream_memory_contract(tmp_path) -> None:
 
 
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
-    """Runtime metadata should be merged with the user message."""
+    """Runtime metadata should stay separate from the user message."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
@@ -76,19 +76,25 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     assert messages[0]["role"] == "system"
     assert "## Current Session" not in messages[0]["content"]
 
-    # Runtime context is now merged with user message into a single message
+    runtime_message = messages[-2]
+    assert runtime_message["role"] == "system"
+    runtime_content = runtime_message["content"]
+    assert isinstance(runtime_content, str)
+    assert ContextBuilder._RUNTIME_CONTEXT_TAG in runtime_content
+    assert "Current Time:" in runtime_content
+    assert "Channel: cli" in runtime_content
+    assert "Chat ID: direct" in runtime_content
+    assert "Return exactly: OK" not in runtime_content
+
     assert messages[-1]["role"] == "user"
     user_content = messages[-1]["content"]
     assert isinstance(user_content, str)
-    assert ContextBuilder._RUNTIME_CONTEXT_TAG in user_content
-    assert "Current Time:" in user_content
-    assert "Channel: cli" in user_content
-    assert "Chat ID: direct" in user_content
-    assert "Return exactly: OK" in user_content
+    assert user_content == "Return exactly: OK"
+    assert ContextBuilder._RUNTIME_CONTEXT_TAG not in user_content
 
 
 def test_runtime_context_includes_sender_id_when_provided(tmp_path) -> None:
-    """Sender ID should be included in runtime context when provided."""
+    """Sender ID should be included in separate runtime context when provided."""
     workspace = _make_workspace(tmp_path)
     builder = ContextBuilder(workspace)
 
@@ -100,9 +106,13 @@ def test_runtime_context_includes_sender_id_when_provided(tmp_path) -> None:
         sender_id="user-12345",
     )
 
+    runtime_content = messages[-2]["content"]
+    assert isinstance(runtime_content, str)
+    assert "Sender ID: user-12345" in runtime_content
+
     user_content = messages[-1]["content"]
     assert isinstance(user_content, str)
-    assert "Sender ID: user-12345" in user_content
+    assert "Sender ID:" not in user_content
 
 
 def test_runtime_context_excludes_sender_id_when_not_provided(tmp_path) -> None:

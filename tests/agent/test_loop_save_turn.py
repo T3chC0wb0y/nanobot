@@ -588,22 +588,22 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
     assert result.content == "next answer"
 
     session = loop.sessions.get_or_create("feishu:c4")
-    assert [
+    saved = [
         {k: v for k, v in m.items() if k in {"role", "content", "tool_call_id", "name"}}
         for m in session.messages
-    ] == [
-        {"role": "user", "content": "keep progress"},
-        {"role": "assistant", "content": "working"},
-        {"role": "tool", "tool_call_id": "call_done", "name": "read_file", "content": "ok"},
-        {
-            "role": "tool",
-            "tool_call_id": "call_pending",
-            "name": "exec",
-            "content": "Error: Task interrupted before this tool finished.",
-        },
-        {"role": "user", "content": "continue here"},
-        {"role": "assistant", "content": "next answer"},
     ]
+
+    assert {"role": "user", "content": "keep progress"} in saved
+    assert {"role": "assistant", "content": "working"} in saved
+    assert {"role": "tool", "tool_call_id": "call_done", "name": "read_file", "content": "ok"} in saved
+    assert {
+        "role": "tool",
+        "tool_call_id": "call_pending",
+        "name": "exec",
+        "content": "Error: Task interrupted before this tool finished.",
+    } in saved
+    assert {"role": "user", "content": "continue here"} in saved
+    assert saved[-1] == {"role": "assistant", "content": "next answer"}
     assert AgentLoop._PENDING_USER_TURN_KEY not in session.metadata
     assert AgentLoop._RUNTIME_CHECKPOINT_KEY not in session.metadata
 
@@ -652,24 +652,27 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
     assert "[Message Time:" in non_system[0]["content"]
     assert "[Message Time:" not in non_system[1]["content"]
     assert non_system[2]["content"].count("subagent result") == 1
-    assert "Current Time:" in non_system[2]["content"]
+    assert "Current Time:" not in non_system[2]["content"]
 
     loop.sessions.invalidate("cli:test")
     persisted = loop.sessions.get_or_create("cli:test")
-    assert [
+    saved = [
         {k: v for k, v in m.items() if k in {"role", "content", "injected_event", "subagent_task_id"}}
         for m in persisted.messages
-    ] == [
-        {"role": "user", "content": "question"},
-        {"role": "assistant", "content": "working"},
-        {
-            "role": "assistant",
-            "content": "subagent result",
-            "injected_event": "subagent_result",
-            "subagent_task_id": "sub-1",
-        },
-        {"role": "assistant", "content": "done"},
     ]
+    assert saved[0] == {"role": "user", "content": "question"}
+    assert saved[1] == {"role": "assistant", "content": "working"}
+    assert saved[2] == {
+        "role": "assistant",
+        "content": "subagent result",
+        "injected_event": "subagent_result",
+        "subagent_task_id": "sub-1",
+    }
+    assert saved[3]["role"] == "system"
+    assert "Current Time:" in saved[3]["content"]
+    assert "Channel: cli" in saved[3]["content"]
+    assert "Sender ID: subagent" in saved[3]["content"]
+    assert saved[-1] == {"role": "assistant", "content": "done"}
 
 
 @pytest.mark.asyncio
