@@ -100,6 +100,7 @@ class SQLiteMemoryStore:
         record_id: str | None = None,
     ) -> MemoryRecord:
         clean_tags = [tag.strip() for tag in tags or [] if tag and tag.strip()]
+        clean_metadata = metadata or {}
         now = utc_now_iso()
         record = MemoryRecord(
             id=record_id or build_record_id(record_type, title, content),
@@ -109,7 +110,7 @@ class SQLiteMemoryStore:
             summary=summary.strip(),
             content=content.strip(),
             tags=clean_tags,
-            metadata=metadata or {},
+            metadata=clean_metadata,
             status="candidate",
             created_at=now,
             updated_at=now,
@@ -165,7 +166,11 @@ class SQLiteMemoryStore:
         now = utc_now_iso()
         with self._connect() as conn:
             conn.execute(
-                "UPDATE memory_records SET status='promoted', updated_at=?, promoted_at=?, deprecated_at=NULL, metadata_json=? WHERE id=?",
+                """
+                UPDATE memory_records
+                SET status='promoted', updated_at=?, promoted_at=?, deprecated_at=NULL, metadata_json=?
+                WHERE id=?
+                """,
                 (now, now, _json_dumps(metadata), record_id),
             )
         promoted = self.get(record_id)
@@ -183,7 +188,11 @@ class SQLiteMemoryStore:
         now = utc_now_iso()
         with self._connect() as conn:
             conn.execute(
-                "UPDATE memory_records SET status='deprecated', updated_at=?, deprecated_at=?, metadata_json=? WHERE id=?",
+                """
+                UPDATE memory_records
+                SET status='deprecated', updated_at=?, deprecated_at=?, metadata_json=?
+                WHERE id=?
+                """,
                 (now, now, _json_dumps(metadata), record_id),
             )
         deprecated = self.get(record_id)
@@ -196,7 +205,13 @@ class SQLiteMemoryStore:
             row = conn.execute("SELECT * FROM memory_records WHERE id=?", (record_id,)).fetchone()
         return self._row_to_record(row) if row else None
 
-    def list_recent(self, *, status: str | None = None, domain: str | None = None, limit: int = 10) -> list[MemoryRecord]:
+    def list_recent(
+        self,
+        *,
+        status: str | None = None,
+        domain: str | None = None,
+        limit: int = 10,
+    ) -> list[MemoryRecord]:
         limit = max(1, min(int(limit), 100))
         clauses: list[str] = []
         params: list[Any] = []
@@ -208,7 +223,10 @@ class SQLiteMemoryStore:
             params.append(domain)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
-            rows = conn.execute(f"SELECT * FROM memory_records {where} ORDER BY updated_at DESC LIMIT ?", (*params, limit)).fetchall()
+            rows = conn.execute(
+                f"SELECT * FROM memory_records {where} ORDER BY updated_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
     def search(
@@ -230,12 +248,33 @@ class SQLiteMemoryStore:
             statuses.append("candidate")
         if include_deprecated:
             statuses.append("deprecated")
-        try:
-            return self._fts_search(query, statuses=statuses, domain=domain, record_type=record_type, limit=limit)
-        except sqlite3.OperationalError:
-            return self._like_search(query, statuses=statuses, domain=domain, record_type=record_type, limit=limit)
 
-    def _fts_search(self, query: str, *, statuses: list[str], domain: str | None, record_type: str | None, limit: int) -> list[dict[str, Any]]:
+        try:
+            return self._fts_search(
+                query,
+                statuses=statuses,
+                domain=domain,
+                record_type=record_type,
+                limit=limit,
+            )
+        except sqlite3.OperationalError:
+            return self._like_search(
+                query,
+                statuses=statuses,
+                domain=domain,
+                record_type=record_type,
+                limit=limit,
+            )
+
+    def _fts_search(
+        self,
+        query: str,
+        *,
+        statuses: list[str],
+        domain: str | None,
+        record_type: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
         clauses = [f"r.status IN ({','.join('?' for _ in statuses)})", "f.memory_records_fts MATCH ?"]
         params: list[Any] = [*statuses, self._fts_query(query)]
         if domain:
@@ -256,10 +295,20 @@ class SQLiteMemoryStore:
             rows = conn.execute(sql, (*params, limit)).fetchall()
         return [self._search_result(row) for row in rows]
 
-    def _like_search(self, query: str, *, statuses: list[str], domain: str | None, record_type: str | None, limit: int) -> list[dict[str, Any]]:
+    def _like_search(
+        self,
+        query: str,
+        *,
+        statuses: list[str],
+        domain: str | None,
+        record_type: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
         like = f"%{query}%"
-        clauses = [f"status IN ({','.join('?' for _ in statuses)})", "(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags_json LIKE ? OR domain LIKE ? OR type LIKE ?)"]
-        params: list[Any] = [*statuses, like, like, like, like, like, like]
+        clauses = [f"status IN ({','.join('?' for _ in statuses)})"]
+        params: list[Any] = [*statuses]
+        clauses.append("(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags_json LIKE ? OR domain LIKE ? OR type LIKE ?)")
+        params.extend([like, like, like, like, like, like])
         if domain:
             clauses.append("domain=?")
             params.append(domain)
@@ -274,8 +323,19 @@ class SQLiteMemoryStore:
     def _replace_fts(self, conn: sqlite3.Connection, record: MemoryRecord) -> None:
         conn.execute("DELETE FROM memory_records_fts WHERE id=?", (record.id,))
         conn.execute(
-            "INSERT INTO memory_records_fts (id, type, domain, title, summary, content, tags) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (record.id, record.type, record.domain, record.title, record.summary, record.content, " ".join(record.tags)),
+            """
+            INSERT INTO memory_records_fts (id, type, domain, title, summary, content, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.type,
+                record.domain,
+                record.title,
+                record.summary,
+                record.content,
+                " ".join(record.tags),
+            ),
         )
 
     @staticmethod
