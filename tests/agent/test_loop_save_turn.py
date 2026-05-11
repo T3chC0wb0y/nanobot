@@ -6,6 +6,7 @@ import pytest
 
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.message import MessageTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse
@@ -438,6 +439,46 @@ async def test_process_message_uses_context_chat_id_for_runtime_prompt(tmp_path:
     assert result.chat_id == "thread-777"
     assert loop.context.build_messages.call_args.kwargs["chat_id"] == "parent-456"
     assert loop._run_agent_loop.call_args.kwargs["chat_id"] == "thread-777"
+
+
+@pytest.mark.asyncio
+async def test_process_message_answers_identity_question_without_calling_provider(tmp_path: Path) -> None:
+    (tmp_path / "USER.md").write_text(
+        "Full name: Bob Johnson.\n"
+        "Preferred name: Bob.\n"
+        "Username: bjohnson.\n"
+        "Mailbox: bjohnson@fwdioc.org.\n",
+        encoding="utf-8",
+    )
+    loop = _make_full_loop(tmp_path)
+    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    loop._run_agent_loop = AsyncMock()  # type: ignore[method-assign]
+    loop.context.build_messages = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "Who am I?"},
+        ]
+    )
+    message_tool = loop.tools.get("message")
+    assert message_tool is not None
+    assert isinstance(message_tool, MessageTool)
+
+    result = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="u1", chat_id="direct", content="Who am I?")
+    )
+
+    assert result is not None
+    assert result.content == "You are Bob Johnson. Your preferred name is Bob."
+    loop._run_agent_loop.assert_not_awaited()
+    session = loop.sessions.get_or_create("cli:direct")
+    assert [
+        {k: v for k, v in m.items() if k in {"role", "content"}}
+        for m in session.messages
+    ] == [
+        {"role": "user", "content": "Who am I?"},
+        {"role": "assistant", "content": "You are Bob Johnson. Your preferred name is Bob."},
+    ]
+    assert AgentLoop._PENDING_USER_TURN_KEY not in session.metadata
 
 
 def test_set_tool_context_uses_effective_key_for_spawn_tool(tmp_path: Path) -> None:
