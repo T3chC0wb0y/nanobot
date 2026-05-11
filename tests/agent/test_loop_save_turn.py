@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.host_ops_answer import host_ops_fallback_answer, host_ops_restart_answer
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.message import MessageTool
 from nanobot.bus.events import InboundMessage
@@ -481,7 +482,66 @@ async def test_process_message_answers_identity_question_without_calling_provide
     assert AgentLoop._PENDING_USER_TURN_KEY not in session.metadata
 
 
+@pytest.mark.asyncio
+async def test_process_message_answers_host_ops_restart_without_calling_provider(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    loop._run_agent_loop = AsyncMock()  # type: ignore[method-assign]
+
+    result = await loop._process_message(
+        InboundMessage(
+            channel="cli",
+            sender_id="u1",
+            chat_id="direct",
+            content="How do I restart the gateway here?",
+        )
+    )
+
+    assert result is not None
+    assert result.content == host_ops_restart_answer()
+    loop._run_agent_loop.assert_not_awaited()
+    session = loop.sessions.get_or_create("cli:direct")
+    assert [
+        {k: v for k, v in m.items() if k in {"role", "content"}}
+        for m in session.messages
+    ] == [
+        {"role": "user", "content": "How do I restart the gateway here?"},
+        {"role": "assistant", "content": host_ops_restart_answer()},
+    ]
+    assert AgentLoop._PENDING_USER_TURN_KEY not in session.metadata
+
+
+@pytest.mark.asyncio
+async def test_process_message_answers_host_ops_fallback_without_calling_provider(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    loop._run_agent_loop = AsyncMock()  # type: ignore[method-assign]
+
+    result = await loop._process_message(
+        InboundMessage(
+            channel="cli",
+            sender_id="u1",
+            chat_id="direct",
+            content="If the wrapper doesn’t fix it, what next?",
+        )
+    )
+
+    assert result is not None
+    assert result.content == host_ops_fallback_answer()
+    loop._run_agent_loop.assert_not_awaited()
+    session = loop.sessions.get_or_create("cli:direct")
+    assert [
+        {k: v for k, v in m.items() if k in {"role", "content"}}
+        for m in session.messages
+    ] == [
+        {"role": "user", "content": "If the wrapper doesn’t fix it, what next?"},
+        {"role": "assistant", "content": host_ops_fallback_answer()},
+    ]
+    assert AgentLoop._PENDING_USER_TURN_KEY not in session.metadata
+
+
 def test_set_tool_context_uses_effective_key_for_spawn_tool(tmp_path: Path) -> None:
+
     loop = _make_full_loop(tmp_path)
     spawn_tool = loop.tools.get("spawn")
     assert spawn_tool is not None

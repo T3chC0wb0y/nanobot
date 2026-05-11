@@ -27,6 +27,7 @@ from nanobot.agent.tools.ask import (
     ask_user_tool_result_messages,
     pending_ask_user_id,
 )
+from nanobot.agent.host_ops_answer import answer_host_ops_question
 from nanobot.agent.identity_answer import answer_identity_question
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
@@ -1140,7 +1141,24 @@ class AgentLoop:
                 metadata=dict(msg.metadata or {}),
             )
 
+        host_ops_answer = None
+        if not pending_ask_id and isinstance(msg.content, str):
+            host_ops_answer = answer_host_ops_question(msg.content)
+        if host_ops_answer is not None:
+            session.add_message("assistant", host_ops_answer)
+            self._clear_pending_user_turn(session)
+            self._clear_runtime_checkpoint(session)
+            self.sessions.save(session)
+            self._schedule_background(self.consolidator.maybe_consolidate_by_tokens(session))
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=host_ops_answer,
+                metadata=dict(msg.metadata or {}),
+            )
+
         final_content, _, all_msgs, stop_reason, had_injections = await self._run_agent_loop(
+
             initial_messages,
             on_progress=on_progress or _bus_progress,
             on_stream=on_stream,
