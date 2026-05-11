@@ -595,6 +595,22 @@ def _migrate_cron_store(config: "Config") -> None:
         shutil.move(str(legacy_path), str(new_path))
 
 
+def _build_runtime_hooks(config: Config, tools) -> list[Any]:
+    """Build optional AgentLoop hooks from typed config."""
+    from nanobot.agent.local_memory_runtime import build_local_memory_hooks
+
+    return build_local_memory_hooks(config, tools)
+
+
+def _attach_runtime_hooks(loop: Any, config: Config) -> None:
+    """Attach configured runtime hooks when the loop exposes extra hooks."""
+    extra_hooks = getattr(loop, "_extra_hooks", None)
+    tools = getattr(loop, "tools", None)
+    if extra_hooks is None or tools is None:
+        return
+    extra_hooks.extend(_build_runtime_hooks(config, tools))
+
+
 # ============================================================================
 # OpenAI-Compatible API Server
 # ============================================================================
@@ -645,6 +661,7 @@ def serve(
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
+    _attach_runtime_hooks(agent_loop, runtime_config)
 
     model_name, preset_tag = _model_display(runtime_config)
     console.print(f"{__logo__} Starting OpenAI-compatible API server")
@@ -760,6 +777,7 @@ def _run_gateway(
         ),
         provider_signature=provider_snapshot.signature,
     )
+    _attach_runtime_hooks(agent, config)
 
     from nanobot.agent.loop import UNIFIED_SESSION_KEY
     from nanobot.bus.events import OutboundMessage
@@ -1147,6 +1165,7 @@ def agent(
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
+    _attach_runtime_hooks(agent_loop, config)
     restart_notice = consume_restart_notice_from_env()
     if restart_notice and should_show_cli_restart_notice(restart_notice, session_id):
         _print_agent_response(

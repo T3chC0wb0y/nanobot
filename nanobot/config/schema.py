@@ -280,6 +280,20 @@ def _lazy_default(module_path: str, class_name: str) -> Any:
     return getattr(module, class_name)()
 
 
+class LocalMemoryToolConfig(Base):
+    """Local memory hook configuration."""
+
+    enabled: bool = False
+    server_name: str = "local_memory"
+    search_first: bool = True
+    auto_capture_candidates: bool = False
+    max_search_results: int = Field(default=3, ge=1)
+    min_query_length: int = Field(default=12, ge=0)
+    max_candidate_chars: int = Field(default=1200, ge=100)
+    max_context_chars: int = Field(default=1600, ge=100)
+    enable_bootstrap_recall: bool = True
+
+
 class ToolsConfig(Base):
     """Tools configuration.
 
@@ -295,6 +309,7 @@ class ToolsConfig(Base):
     image_generation: ImageGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("nanobot.agent.tools.image_generation", "ImageGenerationToolConfig"),
     )
+    local_memory: LocalMemoryToolConfig = Field(default_factory=LocalMemoryToolConfig)
     restrict_to_workspace: bool = False  # restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)

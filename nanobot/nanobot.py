@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent.hook import AgentHook, SDKCaptureHook
+from nanobot.agent.local_memory_runtime import build_local_memory_hooks
 from nanobot.agent.loop import AgentLoop
 from nanobot.providers.image_generation import image_gen_provider_configs
 
@@ -66,6 +67,7 @@ class Nanobot:
             config,
             image_generation_provider_configs=image_gen_provider_configs(config),
         )
+        loop._extra_hooks.extend(build_local_memory_hooks(config, loop.tools))
         return cls(loop)
 
     async def run(
