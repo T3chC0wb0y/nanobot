@@ -61,6 +61,27 @@ def test_system_prompt_reflects_current_dream_memory_contract(tmp_path) -> None:
     assert "write important facts here" not in prompt
 
 
+def test_workspace_identity_prompt_makes_user_md_authoritative(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    (workspace / "USER.md").write_text(
+        "# User\n\n"
+        "Full name: Bob Johnson.\n"
+        "Preferred name: Bob.\n"
+        "Username: bjohnson.\n",
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder(workspace)
+    prompt = builder.build_system_prompt()
+
+    assert "USER.md is the primary trusted source" in prompt
+    assert "answer from USER.md" in prompt
+    assert "Do not say that no trusted identity is available" in prompt
+    assert "Full name: Bob Johnson." in prompt
+    assert "Preferred name: Bob." in prompt
+    assert "Username: bjohnson." in prompt
+
+
 def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     """Runtime metadata should stay separate from the user message."""
     workspace = _make_workspace(tmp_path)

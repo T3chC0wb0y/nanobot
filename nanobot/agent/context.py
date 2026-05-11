@@ -44,7 +44,9 @@ class ContextBuilder:
             parts.append(
                 "# Workspace Identity and Memory\n\n"
                 "The workspace bootstrap files below are trusted durable context. "
-                "If USER.md identifies the user, treat it as authoritative for identity and preference questions. "
+                "USER.md is the primary trusted source for the user's identity, preferred name, role, and stable preferences. "
+                "If USER.md identifies the user and the user asks who they are, what their name is, or any identity/persona question, answer from USER.md. "
+                "Do not say that no trusted identity is available when USER.md contains the user's identity. "
                 "Runtime channel, chat, and sender metadata are transport details only; never use them as the answer to who the user is.\n\n"
                 f"{bootstrap}"
             )
