@@ -287,6 +287,7 @@ class LocalMemoryToolConfig(Base):
     server_name: str = "local_memory"
     search_first: bool = True
     auto_capture_candidates: bool = False
+    capture_mode: Literal["off", "explicit"] = "off"
     max_search_results: int = Field(default=3, ge=1)
     min_query_length: int = Field(default=12, ge=0)
     max_candidate_chars: int = Field(default=1200, ge=100)

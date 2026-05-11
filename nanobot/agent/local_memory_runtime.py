@@ -19,6 +19,7 @@ def build_local_memory_hooks(config: Any, tools: ToolRegistry) -> list[AgentHook
         server_name=local_cfg.server_name,
         search_first=local_cfg.search_first,
         auto_capture_candidates=local_cfg.auto_capture_candidates,
+        capture_mode=local_cfg.capture_mode,
         max_search_results=local_cfg.max_search_results,
         min_query_length=local_cfg.min_query_length,
         max_candidate_chars=local_cfg.max_candidate_chars,

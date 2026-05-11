@@ -3,6 +3,7 @@ import socket
 from unittest.mock import patch
 
 from nanobot.config.loader import load_config, save_config
+from nanobot.config.schema import Config
 from nanobot.security.network import validate_url_target
 
 
@@ -243,3 +244,26 @@ def test_tools_config_exposes_local_memory() -> None:
 
     assert cfg.tools.local_memory.enabled is True
     assert cfg.tools.local_memory.server_name == "local_memory"
+
+
+def test_local_memory_capture_mode_parses() -> None:
+    cfg = Config.model_validate(
+        {
+            "tools": {
+                "local_memory": {
+                    "enabled": True,
+                    "capture_mode": "explicit",
+                }
+            }
+        }
+    )
+
+    assert cfg.tools.local_memory is not None
+    assert cfg.tools.local_memory.capture_mode == "explicit"
+
+
+def test_local_memory_capture_mode_defaults_off() -> None:
+    cfg = Config.model_validate({"tools": {"local_memory": {"enabled": True}}})
+
+    assert cfg.tools.local_memory is not None
+    assert cfg.tools.local_memory.capture_mode == "off"
