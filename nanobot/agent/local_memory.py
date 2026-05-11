@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -85,6 +85,7 @@ class LocalMemoryConfig:
     server_name: str = _LOCAL_MEMORY_SERVER_NAME
     search_first: bool = True
     auto_capture_candidates: bool = False
+    capture_mode: Literal["off", "explicit"] = "off"
     max_search_results: int = 3
     min_query_length: int = 12
     max_candidate_chars: int = 1200
@@ -174,7 +175,9 @@ async def search_local_memory(
 
 
 def should_capture_candidate(user_text: str, assistant_text: str | None, cfg: LocalMemoryConfig) -> bool:
-    if not cfg.enabled or not cfg.auto_capture_candidates:
+    if not cfg.enabled or cfg.capture_mode != "explicit":
+        return False
+    if not _has_explicit_capture_cue(user_text):
         return False
     if not assistant_text:
         return False
@@ -183,7 +186,7 @@ def should_capture_candidate(user_text: str, assistant_text: str | None, cfg: Lo
     text = assistant_text.lower()
     if any(secret_word in text for secret_word in ("token", "password", "secret", "apikey", "api key")):
         return False
-    return any(keyword in user_text.lower() for keyword in _OPERATIONAL_KEYWORDS)
+    return True
 
 
 def build_capture_request(user_text: str, assistant_text: str, cfg: LocalMemoryConfig) -> LocalMemoryCaptureRequest | None:
@@ -224,6 +227,20 @@ async def capture_candidate(tool_registry: ToolRegistry, request: LocalMemoryCap
 
 def _is_bootstrap_recall_query(text: str) -> bool:
     return any(phrase in text for phrase in ("continue", "pick up", "resume", "what next", "where were we"))
+
+
+def _has_explicit_capture_cue(user_text: str) -> bool:
+    text = re.sub(r"\s+", " ", (user_text or "").strip().lower())
+    if not text:
+        return False
+    explicit_cues = (
+        "remember this",
+        "save this",
+        "save this to memory",
+        "note this",
+        "store this",
+    )
+    return any(cue in text for cue in explicit_cues)
 
 
 def _classify_memory_query(user_text: str) -> str | None:
