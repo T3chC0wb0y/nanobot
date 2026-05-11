@@ -23,6 +23,8 @@ from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.progress_hook import AgentProgressHook
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.assistant_identity_answer import answer_assistant_identity_question
+from nanobot.agent.identity_answer import answer_identity_question
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -1282,6 +1284,42 @@ class AgentLoop:
             ctx.session_key,
             ctx.msg,
             self.llm_runtime(),
+        )
+
+        identity_answer = None
+        if isinstance(ctx.msg.content, str):
+            identity_answer = answer_identity_question(self.workspace, ctx.msg.content)
+        if identity_answer is not None:
+            ctx.session.add_message("assistant", identity_answer)
+            self._clear_pending_user_turn(ctx.session)
+            self._clear_runtime_checkpoint(ctx.session)
+            self.sessions.save(ctx.session)
+            self._schedule_background(self.consolidator.maybe_consolidate_by_tokens(ctx.session))
+            ctx.outbound = OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=identity_answer,
+                metadata=dict(ctx.msg.metadata or {}),
+            )
+            return "shortcut"
+
+        assistant_identity_answer = None
+        if isinstance(ctx.msg.content, str):
+            assistant_identity_answer = answer_assistant_identity_question(self.workspace, ctx.msg.content)
+        if assistant_identity_answer is not None:
+            ctx.session.add_message("assistant", assistant_identity_answer)
+            self._clear_pending_user_turn(ctx.session)
+            self._clear_runtime_checkpoint(ctx.session)
+            self.sessions.save(ctx.session)
+            self._schedule_background(self.consolidator.maybe_consolidate_by_tokens(ctx.session))
+            ctx.outbound = OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=assistant_identity_answer,
+                metadata=dict(ctx.msg.metadata or {}),
+            )
+            return "shortcut"
+
         )
 
         ctx.initial_messages = self._build_initial_messages(
