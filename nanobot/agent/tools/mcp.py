@@ -21,6 +21,8 @@ from nanobot.bus.events import (
     InboundMessage,
 )
 
+_MCP_STDIO_ERRLOG = os.path.expanduser("~/.nanobot/logs/agent.log")
+
 # Transient connection errors that warrant a single retry.
 # These typically happen when an MCP server restarts or a network
 # connection is interrupted between calls.
@@ -513,7 +515,15 @@ async def connect_mcp_servers(
                     env=env,
                     cwd=cfg.cwd or None,
                 )
-                read, write = await server_stack.enter_async_context(stdio_client(params))
+                os.makedirs(os.path.dirname(_MCP_STDIO_ERRLOG), exist_ok=True)
+                errlog = open(_MCP_STDIO_ERRLOG, "a", encoding="utf-8")
+                server_stack.push_async_callback(asyncio.to_thread, errlog.close)
+                try:
+                    read, write = await server_stack.enter_async_context(stdio_client(params, errlog=errlog))
+                except TypeError as exc:
+                    if "errlog" not in str(exc):
+                        raise
+                    read, write = await server_stack.enter_async_context(stdio_client(params))
             elif transport_type == "sse":
                 if not await _probe_http_url(cfg.url):
                     logger.warning("MCP server '{}': {} unreachable, skipping", name, cfg.url)
