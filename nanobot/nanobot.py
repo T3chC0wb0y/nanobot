@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent.hook import AgentHook, SDKCaptureHook
+from nanobot.agent.local_memory_runtime import build_local_memory_hooks
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.queue import MessageBus
 
@@ -88,6 +89,7 @@ class Nanobot:
             consolidation_ratio=defaults.consolidation_ratio,
             tools_config=config.tools,
         )
+        loop._extra_hooks.extend(build_local_memory_hooks(config, loop.tools))
         return cls(loop)
 
     async def run(

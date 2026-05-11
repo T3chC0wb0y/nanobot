@@ -223,3 +223,23 @@ def test_load_config_resets_ssrf_whitelist_when_next_config_is_empty(tmp_path) -
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve("ts.local", ["100.100.1.1"])):
         ok, _ = validate_url_target("http://ts.local/api")
         assert not ok
+
+
+def test_tools_config_exposes_local_memory() -> None:
+    from nanobot.config.schema import Config
+
+    cfg = Config.model_validate(
+        {
+            "tools": {
+                "local_memory": {
+                    "enabled": True,
+                    "server_name": "local_memory",
+                    "search_first": True,
+                    "auto_capture_candidates": False,
+                }
+            }
+        }
+    )
+
+    assert cfg.tools.local_memory.enabled is True
+    assert cfg.tools.local_memory.server_name == "local_memory"
