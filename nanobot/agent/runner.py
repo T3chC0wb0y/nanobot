@@ -81,6 +81,7 @@ class AgentRunSpec:
     checkpoint_callback: Any | None = None
     injection_callback: Any | None = None
     llm_timeout_s: float | None = None
+    hook_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -273,7 +274,11 @@ class AgentRunner:
                     messages_for_model = self._backfill_missing_tool_results(messages_for_model)
                 except Exception:
                     messages_for_model = messages
-            context = AgentHookContext(iteration=iteration, messages=messages)
+            context = AgentHookContext(
+                iteration=iteration,
+                messages=messages,
+                metadata=dict(spec.hook_metadata),
+            )
             await hook.before_iteration(context)
             response = await self._request_model(spec, messages_for_model, hook, context)
             raw_usage = self._usage_dict(response.usage)

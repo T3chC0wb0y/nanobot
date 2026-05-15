@@ -35,6 +35,38 @@ def _config(tmp_path) -> LocalMemoryConfig:
 
 
 @pytest.mark.asyncio
+async def test_before_iteration_skips_when_builder_already_included(tmp_path) -> None:
+    tools = StubToolRegistry(
+        {
+            "mcp_local_memory_memory_build_context": {
+                "context": "Use repo-safe workflow first.",
+                "results": [
+                    {
+                        "record_id": "mem-skip",
+                        "type": "procedure",
+                        "status": "promoted",
+                        "title": "Repo workflow",
+                        "summary": "Recall before changes.",
+                    }
+                ],
+            }
+        }
+    )
+    hook = LocalMemoryHook(_config(tmp_path), tools)
+    context = AgentHookContext(
+        iteration=0,
+        messages=[{"role": "user", "content": "remember my preference"}],
+        metadata={"local_memory_builder_included": True},
+    )
+
+    await hook.before_iteration(context)
+
+    assert tools.calls == []
+    assert "local_memory_builder_attempted" not in context.metadata
+    assert "local_memory_injection" not in context.metadata
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "user_request",
     [
@@ -68,8 +100,15 @@ async def test_normal_work_recall_does_not_block(tmp_path, user_request: str) ->
     await hook.before_iteration(context)
 
     assert tools.calls
-    assert context.messages[0]["role"] == "system"
-    assert "Supplemental local-memory recall" in context.messages[0]["content"]
+    assert context.metadata["local_memory_builder_attempted"] is True
+    assert context.metadata["local_memory_status"] == "included"
+    assert context.metadata["local_memory_memory_ids"] == ["mem-1"]
+    injection = context.metadata["local_memory_injection"]
+    assert injection.heading == "Supplemental local-memory recall"
+    assert injection.content == "Use repo-safe workflow first."
+    assert context.metadata["supplemental_sections"] == [
+        "# Supplemental Local Memory\n\nUse repo-safe workflow first."
+    ]
 
 
 @pytest.mark.asyncio
@@ -98,7 +137,11 @@ async def test_promoted_procedure_guides_autonomous_action(tmp_path) -> None:
 
     await hook.before_iteration(context)
 
-    assert "restart-by-agent.sh" in context.messages[0]["content"]
+    assert context.metadata["local_memory_builder_attempted"] is True
+    assert context.metadata["local_memory_status"] == "included"
+    assert context.metadata["local_memory_memory_ids"] == ["mem-restart"]
+    injection = context.metadata["local_memory_injection"]
+    assert "restart-by-agent.sh" in injection.content
 
 
 @pytest.mark.asyncio
@@ -127,6 +170,10 @@ async def test_candidate_memory_is_not_instruction_for_risky_action(tmp_path) ->
 
     with pytest.raises(RiskyActionBlockedError):
         await hook.before_iteration(context)
+
+    assert context.metadata["local_memory_builder_attempted"] is True
+    assert context.metadata["local_memory_status"] == "included"
+    assert context.metadata["local_memory_memory_ids"] == ["cand-1"]
 
 
 @pytest.mark.asyncio
@@ -221,7 +268,8 @@ async def test_approved_helper_path_allowed(tmp_path) -> None:
 
     await hook.before_iteration(context)
 
-    assert "restart-by-agent.sh" in context.messages[0]["content"]
+    injection = context.metadata["local_memory_injection"]
+    assert "restart-by-agent.sh" in injection.content
 
 
 @pytest.mark.asyncio

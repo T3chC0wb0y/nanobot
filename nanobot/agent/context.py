@@ -8,6 +8,7 @@ from importlib.resources import files as pkg_files
 from pathlib import Path
 from typing import Any
 
+from nanobot.agent.local_memory import LocalMemoryInjection
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.utils.helpers import build_assistant_message, current_time_str, detect_image_mime, truncate_text
@@ -35,6 +36,8 @@ class ContextBuilder:
         self,
         skill_names: list[str] | None = None,
         channel: str | None = None,
+        supplemental_sections: list[str] | None = None,
+        local_memory_injection: LocalMemoryInjection | None = None,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
@@ -54,6 +57,18 @@ class ContextBuilder:
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
             parts.append(f"# Memory\n\n{memory}")
+
+        if local_memory_injection and local_memory_injection.content:
+            parts.append(f"# Supplemental Local Memory\n\n{local_memory_injection.content}")
+
+        if supplemental_sections:
+            for section in supplemental_sections:
+                if not section:
+                    continue
+                if section.startswith("# Supplemental Local Memory\n\n"):
+                    if not (local_memory_injection and local_memory_injection.content):
+                        parts.append(section)
+                    continue
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -191,13 +206,23 @@ class ContextBuilder:
         current_role: str = "user",
         session_summary: str | None = None,
         sender_id: str | None = None,
+        supplemental_sections: list[str] | None = None,
+        local_memory_injection: LocalMemoryInjection | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         runtime_ctx = self._build_runtime_context(channel, chat_id, self.timezone, session_summary=session_summary, sender_id=sender_id)
         user_content = self._build_user_content(current_message, media)
 
         messages = [
-            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel)},
+            {
+                "role": "system",
+                "content": self.build_system_prompt(
+                    skill_names,
+                    channel=channel,
+                    supplemental_sections=supplemental_sections,
+                    local_memory_injection=local_memory_injection,
+                ),
+            },
             *history,
         ]
         if runtime_ctx:

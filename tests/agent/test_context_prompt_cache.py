@@ -9,6 +9,7 @@ from pathlib import Path
 import datetime as datetime_module
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.local_memory import LocalMemoryInjection
 
 
 class _FakeDatetime(real_datetime):
@@ -386,3 +387,50 @@ def test_customized_memory_md_is_injected(tmp_path) -> None:
 
     assert "# Memory\n\n## Long-term Memory" in prompt
     assert "User prefers dark mode" in prompt
+
+
+def test_supplemental_local_memory_is_inserted_before_active_skills(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    from nanobot.utils.helpers import sync_workspace_templates
+    sync_workspace_templates(workspace, silent=True)
+
+    (workspace / "memory" / "MEMORY.md").write_text(
+        "# Long-term Memory\n\nUser prefers dark mode.\n", encoding="utf-8"
+    )
+
+    builder = ContextBuilder(workspace)
+    prompt = builder.build_system_prompt(
+        supplemental_sections=[
+            "# Supplemental Local Memory\n\nUse focused tests first.",
+            "# Some Other Supplemental Section\n\nIgnore me.",
+        ]
+    )
+
+    memory_index = prompt.index("# Memory\n\n## Long-term Memory")
+    supplemental_index = prompt.index("# Supplemental Local Memory\n\nUse focused tests first.")
+    active_skills_index = prompt.index("# Active Skills")
+
+    assert memory_index < supplemental_index < active_skills_index
+    assert "# Some Other Supplemental Section" not in prompt
+
+
+def test_build_messages_preserves_local_memory_metadata_separately(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    builder = ContextBuilder(workspace)
+    injection = LocalMemoryInjection(
+        heading="Supplemental local-memory recall",
+        content="Use focused tests first.",
+        memory_ids=["mem-1"],
+    )
+
+    messages = builder.build_messages(
+        history=[],
+        current_message="Proceed",
+        channel="cli",
+        chat_id="direct",
+        supplemental_sections=["# Supplemental Local Memory\n\nUse focused tests first."],
+    )
+
+    assert messages[0]["role"] == "system"
+    assert "# Supplemental Local Memory\n\nUse focused tests first." in messages[0]["content"]
+    assert injection.content == "Use focused tests first."

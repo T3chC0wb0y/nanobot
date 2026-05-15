@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+SUPPLEMENTAL_SECTIONS_KEY = "supplemental_sections"
+
 from loguru import logger
 
 from nanobot.providers.base import LLMResponse, ToolCallRequest
@@ -25,6 +27,7 @@ class AgentHookContext:
     final_content: str | None = None
     stop_reason: str | None = None
     error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentHook:

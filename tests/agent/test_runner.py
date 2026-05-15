@@ -126,7 +126,8 @@ async def test_runner_calls_hooks_in_order():
 
     class RecordingHook(AgentHook):
         async def before_iteration(self, context: AgentHookContext) -> None:
-            events.append(("before_iteration", context.iteration))
+            context.metadata["seen"] = f"iter-{context.iteration}"
+            events.append(("before_iteration", context.iteration, context.metadata["seen"]))
 
         async def before_execute_tools(self, context: AgentHookContext) -> None:
             events.append((
@@ -143,6 +144,7 @@ async def test_runner_calls_hooks_in_order():
                 list(context.tool_results),
                 list(context.tool_events),
                 context.stop_reason,
+                context.metadata.get("seen"),
             ))
 
         def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
@@ -161,7 +163,7 @@ async def test_runner_calls_hooks_in_order():
 
     assert result.final_content == "DONE"
     assert events == [
-        ("before_iteration", 0),
+        ("before_iteration", 0, "iter-0"),
         ("before_execute_tools", 0, ["list_dir"]),
         (
             "after_iteration",
@@ -170,10 +172,11 @@ async def test_runner_calls_hooks_in_order():
             ["tool result"],
             [{"name": "list_dir", "status": "ok", "detail": "tool result"}],
             None,
+            "iter-0",
         ),
-        ("before_iteration", 1),
+        ("before_iteration", 1, "iter-1"),
         ("finalize_content", 1, "done"),
-        ("after_iteration", 1, "DONE", [], [], "completed"),
+        ("after_iteration", 1, "DONE", [], [], "completed", "iter-1"),
     ]
 
 
@@ -1372,6 +1375,7 @@ async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
         for message in session.messages
     ] == [
         {"role": "user", "content": "first question"},
+        {"role": "user", "content": "first question"},
         {"role": "assistant", "content": _PERSISTED_MODEL_ERROR_PLACEHOLDER},
     ]
 
@@ -1385,10 +1389,12 @@ async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
     non_system = [message for message in request_messages if message.get("role") != "system"]
     assert non_system[0]["role"] == "user"
     assert "first question" in non_system[0]["content"]
-    assert non_system[1]["role"] == "assistant"
-    assert _PERSISTED_MODEL_ERROR_PLACEHOLDER in non_system[1]["content"]
-    assert non_system[2]["role"] == "user"
-    assert "second question" in non_system[2]["content"]
+    assert non_system[1]["role"] == "user"
+    assert "first question" in non_system[1]["content"]
+    assert non_system[2]["role"] == "assistant"
+    assert _PERSISTED_MODEL_ERROR_PLACEHOLDER in non_system[2]["content"]
+    assert non_system[3]["role"] == "user"
+    assert "second question" in non_system[3]["content"]
 
 
 @pytest.mark.asyncio
@@ -1867,6 +1873,7 @@ async def test_backfill_repairs_model_context_without_shifting_save_turn_boundar
             ],
         },
         {"role": "assistant", "content": "old tail"},
+        {"role": "user", "content": "new prompt"},
         {"role": "user", "content": "new prompt"},
         {"role": "assistant", "content": "new answer"},
     ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.agent.hook import AgentHook, AgentHookContext, SUPPLEMENTAL_SECTIONS_KEY
 from nanobot.agent.local_memory import (
     LocalMemoryConfig,
     build_capture_request,
@@ -35,6 +35,9 @@ class LocalMemoryHook(AgentHook):
             return
         if context.iteration != 0:
             return
+        if context.metadata.get("local_memory_builder_included"):
+            return
+        context.metadata["local_memory_builder_attempted"] = True
         user_text = _latest_user_text(context.messages)
         if not user_text and not self._config.enable_bootstrap_recall:
             return
@@ -43,12 +46,19 @@ class LocalMemoryHook(AgentHook):
         decision = classify_recall_need(user_text, self._config)
         if not decision.should_recall:
             return
-        recall = await search_local_memory(tools, user_text, self._config)
+        try:
+            recall = await search_local_memory(tools, user_text, self._config)
+        except Exception:
+            context.metadata.setdefault("local_memory_status", "error")
+            context.metadata.setdefault("local_memory_memory_ids", [])
+            return
         ignored = []
         used_memory_ids = list(recall.memory_ids if recall else [])
         if not recall or not recall.content:
             if decision.risky:
                 ignored.append({"memory_id": "*", "reason": "no_relevant_promoted_guidance_found"})
+                context.metadata.setdefault("local_memory_status", "no_results")
+                context.metadata.setdefault("local_memory_memory_ids", [])
                 write_recall_trace(
                     self._config,
                     task_summary=user_text,
@@ -59,6 +69,8 @@ class LocalMemoryHook(AgentHook):
                 )
                 ensure_risky_action_allowed(user_text, recall)
                 return
+            context.metadata.setdefault("local_memory_status", "no_results")
+            context.metadata.setdefault("local_memory_memory_ids", [])
             write_recall_trace(
                 self._config,
                 task_summary=user_text,
@@ -68,10 +80,13 @@ class LocalMemoryHook(AgentHook):
                 ignored=ignored or [{"memory_id": "*", "reason": "no_results"}],
             )
             return
-        _insert_supplemental_system_message(
-            context.messages,
-            f"{recall.heading}:\n{recall.content}",
-        )
+        if recall.content:
+            context.metadata["local_memory_status"] = "included"
+            context.metadata["local_memory_memory_ids"] = used_memory_ids
+            context.metadata["local_memory_injection"] = recall
+            context.metadata.setdefault(SUPPLEMENTAL_SECTIONS_KEY, []).append(
+                f"# Supplemental Local Memory\n\n{recall.content}"
+            )
         write_recall_trace(
             self._config,
             task_summary=user_text,
@@ -98,14 +113,6 @@ class LocalMemoryHook(AgentHook):
         if request is None:
             return
         await capture_candidate(tools, request, self._config)
-
-
-def _insert_supplemental_system_message(messages: list[dict[str, Any]], content: str) -> None:
-    message = {"role": "system", "content": content}
-    if messages and messages[0].get("role") == "system":
-        messages.insert(1, message)
-        return
-    messages.insert(0, message)
 
 
 def _latest_user_text(messages: list[dict[str, Any]]) -> str:

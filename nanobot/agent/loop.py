@@ -258,6 +258,7 @@ class AgentLoop:
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
+        self._local_memory_config = getattr(_tc, "local_memory", None)
 
         self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
@@ -532,6 +533,24 @@ class AgentLoop:
         budget = self.context_window_tokens - max(1, reserved_output) - 1024
         return budget if budget > 0 else max(128, self.context_window_tokens // 2)
 
+
+    async def _precompute_local_memory_recall(
+        self,
+        *,
+        history: list[dict[str, Any]],
+        current_message: str,
+    ):
+        cfg = self._local_memory_config
+        if not cfg.enabled:
+            return None
+        try:
+            if not should_search_local_memory(current_message, cfg):
+                return None
+            return await search_local_memory(self.tools, current_message, cfg)
+        except Exception:
+            logger.exception("Local memory recall failed during prompt assembly")
+            return None
+
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
@@ -545,6 +564,7 @@ class AgentLoop:
         chat_id: str = "direct",
         message_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        hook_metadata: dict[str, Any] | None = None,
         session_key: str | None = None,
         pending_queue: asyncio.Queue | None = None,
     ) -> tuple[str | None, list[str], list[dict], str, bool]:
@@ -661,6 +681,7 @@ class AgentLoop:
                 retry_wait_callback=on_retry_wait,
                 checkpoint_callback=_checkpoint,
                 injection_callback=_drain_pending,
+                hook_metadata=hook_metadata or {},
             ))
         finally:
             reset_file_states(file_state_token)
@@ -966,6 +987,10 @@ class AgentLoop:
                 "include_timestamps": True,
             }
             history = session.get_history(**_hist_kwargs)
+            local_memory_injection = await self._precompute_local_memory_recall(
+                history=history,
+                current_message="" if is_subagent else msg.content,
+            )
             current_role = "assistant" if is_subagent else "user"
 
             # Subagent content is already in `history` above; passing it again
@@ -978,11 +1003,18 @@ class AgentLoop:
                 session_summary=pending,
                 current_role=current_role,
                 sender_id=msg.sender_id,
+                local_memory_injection=local_memory_injection,
             )
             final_content, _, all_msgs, stop_reason, _ = await self._run_agent_loop(
                 messages, session=session, channel=channel, chat_id=chat_id,
                 message_id=msg.metadata.get("message_id"),
                 metadata=msg.metadata,
+                hook_metadata={
+                    "local_memory_builder_attempted": True,
+                    "local_memory_builder_included": bool(local_memory_injection and local_memory_injection.content),
+                    "local_memory_status": "included" if (local_memory_injection and local_memory_injection.content) else "no_results",
+                    "local_memory_memory_ids": list(local_memory_injection.memory_ids) if local_memory_injection else [],
+                },
                 session_key=key,
                 pending_queue=pending_queue,
             )
@@ -1059,11 +1091,25 @@ class AgentLoop:
             "include_timestamps": True,
         }
         history = session.get_history(**_hist_kwargs)
+        local_memory_injection = await self._precompute_local_memory_recall(
+            history=history,
+            current_message=msg.content,
+        )
+        local_memory_hook_metadata = {
+            "local_memory_builder_attempted": True,
+            "local_memory_builder_included": bool(local_memory_injection and local_memory_injection.content),
+            "local_memory_status": "included" if (local_memory_injection and local_memory_injection.content) else "no_results",
+            "local_memory_memory_ids": list(local_memory_injection.memory_ids) if local_memory_injection else [],
+        }
 
         pending_ask_id = pending_ask_user_id(history)
         if pending_ask_id:
             initial_messages = ask_user_tool_result_messages(
-                self.context.build_system_prompt(channel=msg.channel),
+                self.context.build_system_prompt(
+                    channel=msg.channel,
+                    sender_id=msg.sender_id,
+                    local_memory_injection=local_memory_injection,
+                ),
                 history,
                 pending_ask_id,
                 msg.content,
@@ -1077,6 +1123,7 @@ class AgentLoop:
                 channel=msg.channel,
                 chat_id=self._runtime_chat_id(msg),
                 sender_id=msg.sender_id,
+                local_memory_injection=local_memory_injection,
             )
 
         async def _bus_progress(
@@ -1186,6 +1233,7 @@ class AgentLoop:
             chat_id=msg.chat_id,
             message_id=msg.metadata.get("message_id"),
             metadata=msg.metadata,
+            hook_metadata=local_memory_hook_metadata,
             session_key=key,
             pending_queue=pending_queue,
         )
