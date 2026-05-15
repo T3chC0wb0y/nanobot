@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from nanobot.agent.hook import AgentHook
@@ -25,6 +26,7 @@ def build_local_memory_hooks(config: Any, tools: ToolRegistry) -> list[AgentHook
         max_candidate_chars=local_cfg.max_candidate_chars,
         max_context_chars=local_cfg.max_context_chars,
         enable_bootstrap_recall=local_cfg.enable_bootstrap_recall,
+        trace_path=Path(local_cfg.trace_path).expanduser(),
     )
 
     return [LocalMemoryHook(memory_config, tools)]

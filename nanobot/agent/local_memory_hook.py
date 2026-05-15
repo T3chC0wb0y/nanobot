@@ -7,10 +7,12 @@ from nanobot.agent.local_memory import (
     LocalMemoryConfig,
     build_capture_request,
     capture_candidate,
+    classify_recall_need,
+    ensure_risky_action_allowed,
     has_local_memory_server,
     search_local_memory,
     should_capture_candidate,
-    should_search_local_memory,
+    write_recall_trace,
 )
 from nanobot.agent.tools.registry import ToolRegistry
 
@@ -36,17 +38,52 @@ class LocalMemoryHook(AgentHook):
         user_text = _latest_user_text(context.messages)
         if not user_text and not self._config.enable_bootstrap_recall:
             return
-        if user_text and not should_search_local_memory(user_text, self._config):
-            return
         if not user_text:
             user_text = "continue with active project context and user preferences"
-        injection = await search_local_memory(tools, user_text, self._config)
-        if not injection or not injection.content:
+        decision = classify_recall_need(user_text, self._config)
+        if not decision.should_recall:
+            return
+        recall = await search_local_memory(tools, user_text, self._config)
+        ignored = []
+        used_memory_ids = list(recall.memory_ids if recall else [])
+        if not recall or not recall.content:
+            if decision.risky:
+                ignored.append({"memory_id": "*", "reason": "no_relevant_promoted_guidance_found"})
+                write_recall_trace(
+                    self._config,
+                    task_summary=user_text,
+                    decision=decision,
+                    recall=recall,
+                    used_memory_ids=[],
+                    ignored=ignored,
+                )
+                ensure_risky_action_allowed(user_text, recall)
+                return
+            write_recall_trace(
+                self._config,
+                task_summary=user_text,
+                decision=decision,
+                recall=recall,
+                used_memory_ids=[],
+                ignored=ignored or [{"memory_id": "*", "reason": "no_results"}],
+            )
             return
         _insert_supplemental_system_message(
             context.messages,
-            f"{injection.heading}:\n{injection.content}",
+            f"{recall.heading}:\n{recall.content}",
         )
+        write_recall_trace(
+            self._config,
+            task_summary=user_text,
+            decision=decision,
+            recall=recall,
+            used_memory_ids=used_memory_ids,
+            ignored=ignored,
+        )
+        ensure_risky_action_allowed(user_text, recall)
+
+    async def before_execute_tools(self, context: AgentHookContext) -> None:
+        return
 
     async def after_iteration(self, context: AgentHookContext) -> None:
         tools = self._tools
@@ -87,3 +124,4 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
                         parts.append(text)
             return "\n".join(parts).strip()
     return ""
+

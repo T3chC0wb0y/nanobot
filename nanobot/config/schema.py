@@ -266,6 +266,7 @@ class LocalMemoryToolConfig(Base):
     max_candidate_chars: int = Field(default=1200, ge=100)
     max_context_chars: int = Field(default=1600, ge=100)
     enable_bootstrap_recall: bool = True
+    trace_path: str = "~/.nanobot/logs/memory-recall-trace.jsonl"
 
 
 class ToolsConfig(Base):
