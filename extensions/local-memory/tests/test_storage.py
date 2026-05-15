@@ -125,3 +125,63 @@ def test_search_inclusion_flags_for_candidates_and_deprecated(tmp_path):
     assert default_ids == {promoted.id}
     assert candidate_ids == {candidate.id, promoted.id}
     assert all_ids == {candidate.id, promoted.id, deprecated.id}
+
+
+def test_search_supports_multiple_domains_and_types(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+
+    records = [
+        store.capture_candidate(
+            record_id="engineering-preference",
+            record_type="preference",
+            domain="engineering",
+            title="Engineering technical preference",
+            summary="Engineering preference summary.",
+            content="Verify branch state before changing code.",
+        ),
+        store.capture_candidate(
+            record_id="operations-procedure",
+            record_type="procedure",
+            domain="operations",
+            title="Operations deployment procedure",
+            summary="Operations procedure summary.",
+            content="Verify service state before deploy.",
+        ),
+        store.capture_candidate(
+            record_id="user-policy",
+            record_type="policy",
+            domain="user",
+            title="User technical policy",
+            summary="User policy summary.",
+            content="Avoid unverified workarounds in technical work.",
+        ),
+    ]
+    for record in records:
+        store.promote(record.id, promoted_by="reviewer")
+
+    multi_domain_results = store.search(
+        "verify",
+        domains=["engineering", "operations"],
+        record_types=["preference", "procedure"],
+    )
+    multi_domain_ids = {result["id"] for result in multi_domain_results}
+    assert multi_domain_ids == {"engineering-preference", "operations-procedure"}
+
+    compatibility_results = store.search(
+        "verify branch",
+        domain="engineering",
+        record_type="preference",
+    )
+    assert {result["id"] for result in compatibility_results} == {"engineering-preference"}
+
+    merged_filter_results = store.search(
+        "technical",
+        domain="engineering",
+        domains=["user"],
+        record_type="preference",
+        record_types=["policy"],
+    )
+    assert {result["id"] for result in merged_filter_results} == {
+        "engineering-preference",
+        "user-policy",
+    }

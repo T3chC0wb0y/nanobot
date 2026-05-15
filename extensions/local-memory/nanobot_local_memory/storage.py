@@ -234,7 +234,9 @@ class SQLiteMemoryStore:
         query: str,
         *,
         domain: str | None = None,
+        domains: Iterable[str] | None = None,
         record_type: str | None = None,
+        record_types: Iterable[str] | None = None,
         include_candidates: bool = False,
         include_deprecated: bool = False,
         limit: int = 8,
@@ -248,21 +250,23 @@ class SQLiteMemoryStore:
             statuses.append("candidate")
         if include_deprecated:
             statuses.append("deprecated")
+        normalized_domains = self._normalize_filters(domain, domains)
+        normalized_types = self._normalize_filters(record_type, record_types)
 
         try:
             return self._fts_search(
                 query,
                 statuses=statuses,
-                domain=domain,
-                record_type=record_type,
+                domains=normalized_domains,
+                record_types=normalized_types,
                 limit=limit,
             )
         except sqlite3.OperationalError:
             return self._like_search(
                 query,
                 statuses=statuses,
-                domain=domain,
-                record_type=record_type,
+                domains=normalized_domains,
+                record_types=normalized_types,
                 limit=limit,
             )
 
@@ -271,18 +275,18 @@ class SQLiteMemoryStore:
         query: str,
         *,
         statuses: list[str],
-        domain: str | None,
-        record_type: str | None,
+        domains: list[str],
+        record_types: list[str],
         limit: int,
     ) -> list[dict[str, Any]]:
         clauses = [f"r.status IN ({','.join('?' for _ in statuses)})", "f.memory_records_fts MATCH ?"]
         params: list[Any] = [*statuses, self._fts_query(query)]
-        if domain:
-            clauses.append("r.domain=?")
-            params.append(domain)
-        if record_type:
-            clauses.append("r.type=?")
-            params.append(record_type)
+        if domains:
+            clauses.append(f"r.domain IN ({','.join('?' for _ in domains)})")
+            params.extend(domains)
+        if record_types:
+            clauses.append(f"r.type IN ({','.join('?' for _ in record_types)})")
+            params.extend(record_types)
         sql = f"""
             SELECT r.*, bm25(memory_records_fts) AS score
             FROM memory_records_fts f
@@ -300,8 +304,8 @@ class SQLiteMemoryStore:
         query: str,
         *,
         statuses: list[str],
-        domain: str | None,
-        record_type: str | None,
+        domains: list[str],
+        record_types: list[str],
         limit: int,
     ) -> list[dict[str, Any]]:
         like = f"%{query}%"
@@ -309,16 +313,25 @@ class SQLiteMemoryStore:
         params: list[Any] = [*statuses]
         clauses.append("(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags_json LIKE ? OR domain LIKE ? OR type LIKE ?)")
         params.extend([like, like, like, like, like, like])
-        if domain:
-            clauses.append("domain=?")
-            params.append(domain)
-        if record_type:
-            clauses.append("type=?")
-            params.append(record_type)
+        if domains:
+            clauses.append(f"domain IN ({','.join('?' for _ in domains)})")
+            params.extend(domains)
+        if record_types:
+            clauses.append(f"type IN ({','.join('?' for _ in record_types)})")
+            params.extend(record_types)
         sql = f"SELECT *, 0.0 AS score FROM memory_records WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?"
         with self._connect() as conn:
             rows = conn.execute(sql, (*params, limit)).fetchall()
         return [self._search_result(row) for row in rows]
+
+    @staticmethod
+    def _normalize_filters(primary: str | None, additional: Iterable[str] | None) -> list[str]:
+        values: list[str] = []
+        for candidate in [primary, *(list(additional or []))]:
+            text = str(candidate or "").strip()
+            if text and text not in values:
+                values.append(text)
+        return values
 
     def _replace_fts(self, conn: sqlite3.Connection, record: MemoryRecord) -> None:
         conn.execute("DELETE FROM memory_records_fts WHERE id=?", (record.id,))

@@ -5,6 +5,37 @@ from typing import Any
 from .storage import SQLiteMemoryStore, default_database_path
 
 
+def _truncate_text(value: str, max_chars: int) -> str:
+    text = (value or "").strip()
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _render_record_brief(record: dict[str, Any]) -> str:
+    lines: list[str] = []
+    title = str(record.get("title") or "").strip()
+    if title:
+        lines.append(f"- {title}")
+    summary = str(record.get("summary") or "").strip()
+    if summary:
+        lines.append(f"  summary: {summary}")
+    domain = str(record.get("domain") or "").strip()
+    record_type = str(record.get("type") or "").strip()
+    meta_parts = [part for part in (domain, record_type) if part]
+    if meta_parts:
+        lines.append(f"  scope: {' / '.join(meta_parts)}")
+    tags = record.get("tags") or []
+    if tags:
+        rendered_tags = ", ".join(str(tag) for tag in tags[:8] if str(tag).strip())
+        if rendered_tags:
+            lines.append(f"  tags: {rendered_tags}")
+    content = str(record.get("content") or "").strip()
+    if content:
+        lines.append(f"  content: {_truncate_text(content, 280)}")
+    return "\n".join(lines).strip()
+
+
 def get_store() -> SQLiteMemoryStore:
     return SQLiteMemoryStore(default_database_path())
 
@@ -55,7 +86,9 @@ def create_mcp_server():
     def search(
         query: str,
         domain: str | None = None,
+        domains: list[str] | None = None,
         type: str | None = None,
+        types: list[str] | None = None,
         include_candidates: bool = False,
         include_deprecated: bool = False,
         limit: int = 8,
@@ -64,19 +97,22 @@ def create_mcp_server():
         results = get_store().search(
             query,
             domain=domain,
+            domains=domains,
             record_type=type,
+            record_types=types,
             include_candidates=include_candidates,
             include_deprecated=include_deprecated,
             limit=limit,
         )
         return {"ok": True, "count": len(results), "results": results}
 
-
     @mcp.tool(name="memory_build_context")
     def build_context(
         query: str,
         domain: str | None = None,
+        domains: list[str] | None = None,
         type: str | None = None,
+        types: list[str] | None = None,
         include_candidates: bool = False,
         include_deprecated: bool = False,
         limit: int = 8,
@@ -86,7 +122,9 @@ def create_mcp_server():
         results = get_store().search(
             query,
             domain=domain,
+            domains=domains,
             record_type=type,
+            record_types=types,
             include_candidates=include_candidates,
             include_deprecated=include_deprecated,
             limit=limit,
@@ -114,6 +152,7 @@ def create_mcp_server():
         }
 
     @mcp.tool(name="memory_get")
+
     def get(record_id: str) -> dict[str, Any]:
         """Fetch one local memory record by id."""
         record = get_store().get(record_id)
