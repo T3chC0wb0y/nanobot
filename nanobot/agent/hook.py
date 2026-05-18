@@ -10,12 +10,16 @@ from loguru import logger
 from nanobot.providers.base import LLMResponse, ToolCallRequest
 
 
+SUPPLEMENTAL_SECTIONS_KEY = "supplemental_sections"
+
+
 @dataclass(slots=True)
 class AgentHookContext:
     """Mutable per-iteration state exposed to runner hooks."""
 
     iteration: int
     messages: list[dict[str, Any]]
+    metadata: dict[str, Any] = field(default_factory=dict)
     response: LLMResponse | None = None
     usage: dict[str, int] = field(default_factory=dict)
     tool_calls: list[ToolCallRequest] = field(default_factory=list)

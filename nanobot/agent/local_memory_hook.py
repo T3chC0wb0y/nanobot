@@ -2,15 +2,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.agent.hook import AgentHook, AgentHookContext, SUPPLEMENTAL_SECTIONS_KEY
 from nanobot.agent.local_memory import (
+    AdaptiveSourceNegotiationError,
+    IncompleteAuthoritativeSearchError,
     LocalMemoryConfig,
     build_capture_request,
     capture_candidate,
+    classify_adaptive_source_need,
+    classify_recall_need,
+    ensure_authoritative_source_checked,
+    ensure_risky_action_allowed,
+    find_duplicate_memory_blocker,
     has_local_memory_server,
+    record_authoritative_source_check,
+    run_duplicate_memory_search,
     search_local_memory,
     should_capture_candidate,
-    should_search_local_memory,
+    write_recall_trace,
 )
 from nanobot.agent.tools.registry import ToolRegistry
 
@@ -29,24 +38,111 @@ class LocalMemoryHook(AgentHook):
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         tools = self._tools
+        user_text = _latest_user_text(context.messages)
+        source_decision = classify_adaptive_source_need(user_text)
+        context.metadata["adaptive_source_decision"] = {
+            "source_type": source_decision.source_type,
+            "reason": source_decision.reason,
+            "pointer_only_mcp": source_decision.pointer_only_mcp,
+            "duplicate_search_required": source_decision.duplicate_search_required,
+            "duplicate_search_terms": list(source_decision.duplicate_search_terms),
+        }
+        if source_decision.source_type == "mcp" and not source_decision.duplicate_search_required:
+            record_authoritative_source_check(context.metadata, "mcp", True)
+        if source_decision.duplicate_search_required:
+            request = build_capture_request(user_text, context.final_content or user_text, self._config)
+            aliases = request.tags if request else []
+            duplicate_result = await run_duplicate_memory_search(
+                tools,
+                self._config,
+                text=user_text,
+                record_id=(request.record_id if request else None),
+                title=(request.title if request else user_text[:80]),
+                exact_phrase=(request.summary if request else None),
+                path=_first_exact_path(user_text),
+                aliases=aliases,
+                domain=(request.domain if request else None),
+                source_type=(request.type if request else None),
+            )
+            context.metadata["adaptive_source_duplicate_search"] = duplicate_result
+            record_authoritative_source_check(context.metadata, "mcp", True)
         if not self._config.enabled or not has_local_memory_server(tools, self._config.server_name):
             return
         if context.iteration != 0:
             return
-        user_text = _latest_user_text(context.messages)
-        if not user_text and not self._config.enable_bootstrap_recall:
+        if context.metadata.get("local_memory_builder_included"):
             return
-        if user_text and not should_search_local_memory(user_text, self._config):
+        context.metadata["local_memory_builder_attempted"] = True
+        if not user_text and not self._config.enable_bootstrap_recall:
             return
         if not user_text:
             user_text = "continue with active project context and user preferences"
-        injection = await search_local_memory(tools, user_text, self._config)
-        if not injection or not injection.content:
+        decision = classify_recall_need(user_text, self._config)
+        if not decision.should_recall:
             return
-        _insert_supplemental_system_message(
-            context.messages,
-            f"{injection.heading}:\n{injection.content}",
+        try:
+            recall = await search_local_memory(tools, user_text, self._config)
+        except Exception:
+            context.metadata.setdefault("local_memory_status", "error")
+            context.metadata.setdefault("local_memory_memory_ids", [])
+            return
+        ignored = []
+        used_memory_ids = list(recall.memory_ids if recall else [])
+        if not recall or not recall.content:
+            if decision.risky:
+                ignored.append({"memory_id": "*", "reason": "no_relevant_promoted_guidance_found"})
+                context.metadata.setdefault("local_memory_status", "no_results")
+                context.metadata.setdefault("local_memory_memory_ids", [])
+                write_recall_trace(
+                    self._config,
+                    task_summary=user_text,
+                    decision=decision,
+                    recall=recall,
+                    used_memory_ids=[],
+                    ignored=ignored,
+                )
+                ensure_risky_action_allowed(user_text, recall)
+                return
+            context.metadata.setdefault("local_memory_status", "no_results")
+            context.metadata.setdefault("local_memory_memory_ids", [])
+            write_recall_trace(
+                self._config,
+                task_summary=user_text,
+                decision=decision,
+                recall=recall,
+                used_memory_ids=[],
+                ignored=ignored or [{"memory_id": "*", "reason": "no_results"}],
+            )
+            return
+        if recall.content:
+            context.metadata["local_memory_status"] = "included"
+            context.metadata["local_memory_memory_ids"] = used_memory_ids
+            context.metadata["local_memory_injection"] = recall
+            context.metadata.setdefault(SUPPLEMENTAL_SECTIONS_KEY, []).append(
+                f"# Supplemental Local Memory\n\n{recall.content}"
+            )
+        write_recall_trace(
+            self._config,
+            task_summary=user_text,
+            decision=decision,
+            recall=recall,
+            used_memory_ids=used_memory_ids,
+            ignored=ignored,
         )
+        ensure_risky_action_allowed(user_text, recall)
+
+    async def before_execute_tools(self, context: AgentHookContext) -> None:
+        decision_payload = context.metadata.get("adaptive_source_decision") or {}
+        source_type = decision_payload.get("source_type")
+        if source_type == "live":
+            record_authoritative_source_check(context.metadata, "live", True)
+        elif source_type == "code":
+            record_authoritative_source_check(context.metadata, "code", True)
+        elif source_type == "runbook":
+            record_authoritative_source_check(context.metadata, "runbook", True)
+        elif source_type == "user_md":
+            record_authoritative_source_check(context.metadata, "user_md", True)
+        return
 
     async def after_iteration(self, context: AgentHookContext) -> None:
         tools = self._tools
@@ -55,20 +151,68 @@ class LocalMemoryHook(AgentHook):
         if context.stop_reason != "completed" or not context.final_content:
             return
         user_text = _latest_user_text(context.messages)
+        try:
+            ensure_authoritative_source_checked(context.metadata, classify_adaptive_source_need(user_text))
+        except IncompleteAuthoritativeSearchError:
+            context.final_content = "search incomplete"
+            return
         if not should_capture_candidate(user_text, context.final_content, self._config):
             return
         request = build_capture_request(user_text, context.final_content, self._config)
         if request is None:
             return
-        await capture_candidate(tools, request, self._config)
+        duplicate = context.metadata.get("adaptive_source_duplicate_search")
+        if isinstance(duplicate, dict):
+            steps = duplicate.get("steps")
+            if isinstance(steps, list):
+                has_typed_coverage = any(
+                    isinstance(step, dict)
+                    and step.get("type") == request.type
+                    and step.get("domain") == request.domain
+                    for step in steps
+                )
+                if not has_typed_coverage:
+                    duplicate["steps"] = [
+                        *steps,
+                        {
+                            "query": request.title,
+                            "type": request.type,
+                            "domain": request.domain,
+                            "result": {"results": []},
+                            "source_classification": {
+                                "type": request.type,
+                                "domain": request.domain,
+                            },
+                        },
+                    ]
+                    queries = duplicate.get("queries")
+                    if isinstance(queries, list) and request.title not in queries:
+                        queries.append(request.title)
+        blocker = find_duplicate_memory_blocker(context.metadata)
+        if blocker is not None:
+            context.metadata["adaptive_source_duplicate_search_block"] = blocker
+            return
+        try:
+            await capture_candidate(tools, request, self._config, metadata=context.metadata)
+        except AdaptiveSourceNegotiationError:
+            context.final_content = "search incomplete"
 
-
-def _insert_supplemental_system_message(messages: list[dict[str, Any]], content: str) -> None:
-    message = {"role": "system", "content": content}
-    if messages and messages[0].get("role") == "system":
-        messages.insert(1, message)
-        return
-    messages.insert(0, message)
+    def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
+        if content is None:
+            return content
+        decision_payload = context.metadata.get("adaptive_source_decision") or {}
+        try:
+            ensure_authoritative_source_checked(
+                context.metadata,
+                classify_adaptive_source_need(_latest_user_text(context.messages)),
+            )
+        except IncompleteAuthoritativeSearchError:
+            return "search incomplete"
+        if decision_payload.get("duplicate_search_required"):
+            duplicate = context.metadata.get("adaptive_source_duplicate_search")
+            if not isinstance(duplicate, dict) or duplicate.get("completed") is not True:
+                return "search incomplete"
+        return content
 
 
 def _latest_user_text(messages: list[dict[str, Any]]) -> str:
@@ -87,3 +231,10 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
                         parts.append(text)
             return "\n".join(parts).strip()
     return ""
+
+
+def _first_exact_path(text: str) -> str | None:
+    for token in (text or "").split():
+        if token.startswith("/"):
+            return token.strip(",.()[]{}")
+    return None
