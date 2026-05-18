@@ -36,6 +36,7 @@ class ContextBuilder:
         self,
         skill_names: list[str] | None = None,
         channel: str | None = None,
+        sender_id: str | None = None,
         supplemental_sections: list[str] | None = None,
         local_memory_injection: LocalMemoryInjection | None = None,
     ) -> str:
