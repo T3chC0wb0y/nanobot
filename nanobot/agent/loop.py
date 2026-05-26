@@ -197,6 +197,10 @@ class AgentLoop:
         self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
+        for hook in self._extra_hooks:
+            bind_tools = getattr(hook, "bind_tools", None)
+            if bind_tools is not None:
+                bind_tools(self.tools)
         self.runner = AgentRunner(provider)
         self.subagents = SubagentManager(
             provider=provider,

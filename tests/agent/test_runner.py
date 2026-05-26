@@ -178,6 +178,86 @@ async def test_runner_calls_hooks_in_order():
 
 
 @pytest.mark.asyncio
+async def test_runner_does_not_overwrite_successful_final_answer_with_search_incomplete_metadata():
+    from nanobot.agent.hook import AgentHook
+    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+
+    provider = MagicMock()
+
+    async def chat_with_retry(**kwargs):
+        return LLMResponse(content="repo debug complete", tool_calls=[], usage={})
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+
+    class SearchIncompleteMetadataHook(AgentHook):
+        def finalize_content(self, context, content):
+            context.metadata["authoritative_source_gate"] = {
+                "status": "search_incomplete",
+                "reason": "authoritative source lookup incomplete",
+            }
+            return content
+
+    runner = AgentRunner(provider)
+    result = await runner.run(AgentRunSpec(
+        initial_messages=[{"role": "user", "content": "Debug the search incomplete path in this repo"}],
+        tools=tools,
+        model="test-model",
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        hook=SearchIncompleteMetadataHook(),
+    ))
+
+    assert result.final_content == "repo debug complete"
+    assert result.stop_reason == "completed"
+    assert result.error is None
+    assert result.messages[-1]["content"] == "repo debug complete"
+
+
+@pytest.mark.asyncio
+async def test_runner_applies_supplemental_sections_before_model_request():
+    from nanobot.agent.hook import AgentHook, AgentHookContext
+    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+
+    provider = MagicMock()
+    captured_messages: list[dict] = []
+
+    async def chat_with_retry(*, messages, **kwargs):
+        captured_messages[:] = messages
+        return LLMResponse(content="done", tool_calls=[], usage={})
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+
+    class SupplementalHook(AgentHook):
+        async def before_iteration(self, context: AgentHookContext) -> None:
+            context.metadata.setdefault("supplemental_sections", []).append(
+                "# Supplemental Local Memory\n\nUse repo-safe workflow first."
+            )
+
+    runner = AgentRunner(provider)
+    result = await runner.run(AgentRunSpec(
+        initial_messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "do task"},
+        ],
+        tools=tools,
+        model="test-model",
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        hook=SupplementalHook(),
+    ))
+
+    assert result.final_content == "done"
+    assert captured_messages[0]["role"] == "system"
+    assert "system" in captured_messages[0]["content"]
+    assert "# Supplemental Local Memory" in captured_messages[0]["content"]
+    assert "Use repo-safe workflow first." in captured_messages[0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_runner_streaming_hook_receives_deltas_and_end_signal():
     from nanobot.agent.hook import AgentHook, AgentHookContext
     from nanobot.agent.runner import AgentRunSpec, AgentRunner

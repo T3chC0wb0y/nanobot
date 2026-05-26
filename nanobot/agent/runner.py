@@ -10,7 +10,7 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.agent.hook import AgentHook, AgentHookContext
+from nanobot.agent.hook import SUPPLEMENTAL_SECTIONS_KEY, AgentHook, AgentHookContext
 from nanobot.utils.prompt_templates import render_template
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.providers.base import LLMProvider, ToolCallRequest
@@ -111,6 +111,29 @@ class AgentRunner:
             return [{"type": "text", "text": str(value)}]
 
         return _to_blocks(left) + _to_blocks(right)
+
+    @staticmethod
+    def _apply_supplemental_sections(
+        messages: list[dict[str, Any]],
+        sections: Any,
+    ) -> list[dict[str, Any]]:
+        if not sections:
+            return messages
+        valid_sections = [str(section).strip() for section in sections if str(section).strip()]
+        if not valid_sections:
+            return messages
+        supplemental = "\n\n".join(valid_sections)
+        updated = [dict(message) for message in messages]
+        for index, message in enumerate(updated):
+            if message.get("role") == "system":
+                merged = dict(message)
+                merged["content"] = AgentRunner._merge_message_content(
+                    merged.get("content"),
+                    supplemental,
+                )
+                updated[index] = merged
+                return updated
+        return [{"role": "system", "content": supplemental}, *updated]
 
     @classmethod
     def _append_injected_messages(
@@ -266,6 +289,10 @@ class AgentRunner:
                     messages_for_model = messages
             context = AgentHookContext(iteration=iteration, messages=messages, agent=self)
             await hook.before_iteration(context)
+            messages_for_model = self._apply_supplemental_sections(
+                messages_for_model,
+                context.metadata.get(SUPPLEMENTAL_SECTIONS_KEY),
+            )
             response = await self._request_model(spec, messages_for_model, hook, context)
             raw_usage = self._usage_dict(response.usage)
             context.response = response
