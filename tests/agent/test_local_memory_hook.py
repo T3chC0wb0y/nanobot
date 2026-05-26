@@ -118,6 +118,54 @@ async def test_normal_work_recall_does_not_block(tmp_path, user_request: str) ->
 
 
 @pytest.mark.asyncio
+async def test_finalize_does_not_replace_code_answers_without_tool_use(tmp_path) -> None:
+    tools = StubToolRegistry({})
+    hook = LocalMemoryHook(_config(tmp_path), tools)
+    context = AgentHookContext(
+        iteration=0,
+        messages=[{"role": "user", "content": "Read the code in nanobot/agent/local_memory_hook.py and explain the finalize_content path"}],
+    )
+
+    await hook.before_iteration(context)
+
+    assert hook.finalize_content(context, "I can inspect that.") == "I can inspect that."
+    assert context.metadata["adaptive_source_decision"]["source_type"] == "code"
+
+
+@pytest.mark.asyncio
+async def test_finalize_accepts_code_source_after_relevant_tool_call(tmp_path) -> None:
+    tools = StubToolRegistry({})
+    hook = LocalMemoryHook(_config(tmp_path), tools)
+    context = AgentHookContext(
+        iteration=0,
+        messages=[{"role": "user", "content": "Read the code in nanobot/agent/local_memory_hook.py and explain the finalize_content path"}],
+        tool_calls=[ToolCallRequest(id="call-1", name="read_file", arguments={"path": "nanobot/agent/local_memory_hook.py"})],
+    )
+
+    await hook.before_iteration(context)
+    await hook.before_execute_tools(context)
+
+    assert hook.finalize_content(context, "The code path is in local_memory_hook.py.") == "The code path is in local_memory_hook.py."
+
+
+@pytest.mark.asyncio
+async def test_finalize_keeps_answer_for_unrelated_tool_call(tmp_path) -> None:
+    tools = StubToolRegistry({})
+    hook = LocalMemoryHook(_config(tmp_path), tools)
+    context = AgentHookContext(
+        iteration=0,
+        messages=[{"role": "user", "content": "Read the code in nanobot/agent/local_memory_hook.py and explain the finalize_content path"}],
+        tool_calls=[ToolCallRequest(id="call-1", name="message", arguments={"content": "checking"})],
+    )
+
+    await hook.before_iteration(context)
+    await hook.before_execute_tools(context)
+
+    assert hook.finalize_content(context, "I sent a status message.") == "I sent a status message."
+    assert context.metadata["adaptive_source_decision"]["source_type"] == "code"
+
+
+@pytest.mark.asyncio
 async def test_promoted_procedure_guides_autonomous_action(tmp_path) -> None:
     tools = StubToolRegistry(
         {

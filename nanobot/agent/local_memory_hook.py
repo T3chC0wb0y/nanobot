@@ -134,13 +134,14 @@ class LocalMemoryHook(AgentHook):
     async def before_execute_tools(self, context: AgentHookContext) -> None:
         decision_payload = context.metadata.get("adaptive_source_decision") or {}
         source_type = decision_payload.get("source_type")
-        if source_type == "live":
+        tool_names = _tool_names(context.tool_calls)
+        if source_type == "live" and _has_any_tool(tool_names, {"exec"}):
             record_authoritative_source_check(context.metadata, "live", True)
-        elif source_type == "code":
+        elif source_type == "code" and _has_any_tool(tool_names, {"read_file", "grep", "glob", "list_dir", "exec"}):
             record_authoritative_source_check(context.metadata, "code", True)
-        elif source_type == "runbook":
+        elif source_type == "runbook" and _has_any_tool(tool_names, {"read_file", "grep", "glob", "list_dir", "exec"}):
             record_authoritative_source_check(context.metadata, "runbook", True)
-        elif source_type == "user_md":
+        elif source_type == "user_md" and _has_any_tool(tool_names, {"read_file", "grep", "glob", "list_dir", "exec"}):
             record_authoritative_source_check(context.metadata, "user_md", True)
         return
 
@@ -151,11 +152,13 @@ class LocalMemoryHook(AgentHook):
         if context.stop_reason != "completed" or not context.final_content:
             return
         user_text = _latest_user_text(context.messages)
-        try:
-            ensure_authoritative_source_checked(context.metadata, classify_adaptive_source_need(user_text))
-        except IncompleteAuthoritativeSearchError:
-            context.final_content = "search incomplete"
-            return
+        if _should_enforce_adaptive_source_gate(context):
+            try:
+                ensure_authoritative_source_checked(context.metadata, classify_adaptive_source_need(user_text))
+            except IncompleteAuthoritativeSearchError:
+                context.metadata["adaptive_source_incomplete"] = True
+                context.metadata["adaptive_source_incomplete_stage"] = "after_iteration"
+                return
         if not should_capture_candidate(user_text, context.final_content, self._config):
             return
         request = build_capture_request(user_text, context.final_content, self._config)
@@ -195,10 +198,12 @@ class LocalMemoryHook(AgentHook):
         try:
             await capture_candidate(tools, request, self._config, metadata=context.metadata)
         except AdaptiveSourceNegotiationError:
-            context.final_content = "search incomplete"
+            context.metadata["adaptive_source_capture_incomplete"] = True
 
     def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
         if content is None:
+            return content
+        if not _should_enforce_adaptive_source_gate(context):
             return content
         decision_payload = context.metadata.get("adaptive_source_decision") or {}
         try:
@@ -207,12 +212,27 @@ class LocalMemoryHook(AgentHook):
                 classify_adaptive_source_need(_latest_user_text(context.messages)),
             )
         except IncompleteAuthoritativeSearchError:
-            return "search incomplete"
+            context.metadata["adaptive_source_incomplete"] = True
+            context.metadata["adaptive_source_incomplete_stage"] = "finalize_content"
+            return content
         if decision_payload.get("duplicate_search_required"):
             duplicate = context.metadata.get("adaptive_source_duplicate_search")
             if not isinstance(duplicate, dict) or duplicate.get("completed") is not True:
-                return "search incomplete"
+                context.metadata["adaptive_source_incomplete"] = True
+                context.metadata["adaptive_source_incomplete_stage"] = "duplicate_search"
+                return content
         return content
+
+
+def _should_enforce_adaptive_source_gate(context: AgentHookContext) -> bool:
+    decision_payload = context.metadata.get("adaptive_source_decision")
+    if not isinstance(decision_payload, dict):
+        return False
+    if decision_payload.get("duplicate_search_required"):
+        return True
+    source_type = decision_payload.get("source_type")
+    return source_type in {"runbook", "user_md"}
+
 
 
 def _latest_user_text(messages: list[dict[str, Any]]) -> str:
@@ -238,3 +258,31 @@ def _first_exact_path(text: str) -> str | None:
         if token.startswith("/"):
             return token.strip(",.()[]{}")
     return None
+
+def _tool_names(tool_calls: list[Any]) -> set[str]:
+    names: set[str] = set()
+    for call in tool_calls:
+        name: Any = None
+        if hasattr(call, "function"):
+            function = getattr(call, "function")
+            if isinstance(function, dict):
+                name = function.get("name")
+        if name is None and isinstance(call, dict):
+            function = call.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+            else:
+                name = call.get("name")
+        if name is None and hasattr(call, "name"):
+            name = getattr(call, "name")
+        if isinstance(name, str) and name.strip():
+            names.add(_base_tool_name(name))
+    return names
+
+
+def _base_tool_name(name: str) -> str:
+    return name.rsplit(".", 1)[-1]
+
+
+def _has_any_tool(tool_names: set[str], allowed: set[str]) -> bool:
+    return bool(tool_names & allowed)
