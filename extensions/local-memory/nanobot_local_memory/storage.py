@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
+from .capture_shaping import shape_capture_candidate
 from .schema import MemoryRecord, utc_now_iso
 
 
@@ -99,18 +100,25 @@ class SQLiteMemoryStore:
         metadata: dict[str, Any] | None = None,
         record_id: str | None = None,
     ) -> MemoryRecord:
-        clean_tags = [tag.strip() for tag in tags or [] if tag and tag.strip()]
-        clean_metadata = metadata or {}
+        shaped = shape_capture_candidate(
+            record_type=record_type,
+            domain=domain,
+            title=title,
+            summary=summary,
+            content=content,
+            tags=tags,
+            metadata=metadata,
+        )
         now = utc_now_iso()
         record = MemoryRecord(
-            id=record_id or build_record_id(record_type, title, content),
-            type=record_type.strip(),
-            domain=domain.strip(),
-            title=title.strip(),
-            summary=summary.strip(),
-            content=content.strip(),
-            tags=clean_tags,
-            metadata=clean_metadata,
+            id=record_id or build_record_id(shaped.record_type, shaped.title, shaped.content),
+            type=shaped.record_type,
+            domain=shaped.domain,
+            title=shaped.title,
+            summary=shaped.summary,
+            content=shaped.content,
+            tags=shaped.tags,
+            metadata=shaped.metadata,
             status="candidate",
             created_at=now,
             updated_at=now,

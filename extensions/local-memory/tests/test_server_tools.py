@@ -59,7 +59,7 @@ def test_memory_search_and_build_context_support_multiple_domains_and_types(tmp_
         },
         {
             "type": "policy",
-            "domain": "user",
+            "domain": "personal",
             "title": "User policy",
             "summary": "User policy summary.",
             "content": "Avoid unverified workarounds.",
@@ -82,7 +82,7 @@ def test_memory_search_and_build_context_support_multiple_domains_and_types(tmp_
 
     compatibility_result = search(
         query="avoid unverified",
-        domain="user",
+        domain="personal",
         type="policy",
     )
     assert {record["id"] for record in compatibility_result["results"]} == {"user-policy"}

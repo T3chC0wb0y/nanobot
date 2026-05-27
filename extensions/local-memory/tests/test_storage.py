@@ -15,6 +15,9 @@ def test_candidate_promote_search_and_deprecate(tmp_path):
     )
 
     assert record.status == "candidate"
+    assert record.type == "resolution_pattern"
+    assert record.domain == "microsoft_365"
+    assert record.metadata["capture_shaped_by"] == "local-memory-mcp"
     assert store.search("shared mailbox") == []
 
     promoted = store.promote(record.id, promoted_by="Bob", note="validated")
@@ -150,7 +153,7 @@ def test_search_supports_multiple_domains_and_types(tmp_path):
         store.capture_candidate(
             record_id="user-policy",
             record_type="policy",
-            domain="user",
+            domain="personal",
             title="User technical policy",
             summary="User policy summary.",
             content="Avoid unverified workarounds in technical work.",
@@ -177,7 +180,7 @@ def test_search_supports_multiple_domains_and_types(tmp_path):
     merged_filter_results = store.search(
         "technical",
         domain="engineering",
-        domains=["user"],
+        domains=["personal"],
         record_type="preference",
         record_types=["policy"],
     )
