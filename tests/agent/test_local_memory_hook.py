@@ -426,10 +426,12 @@ async def test_capture_candidate_on_explicit_request(tmp_path) -> None:
     assert isinstance(queries, list)
     steps = duplicate.get("steps")
     assert isinstance(steps, list)
-    assert any(step.get("type") == "procedure" and step.get("domain") == "operations" for step in steps)
     assert any(name == "mcp_local_memory_memory_capture_candidate" for name, _ in tools.calls)
     capture_calls = [params for name, params in tools.calls if name == "mcp_local_memory_memory_capture_candidate"]
     assert len(capture_calls) == 1
+    assert capture_calls[0]["metadata"]["server_shapes_capture"] is True
+    assert capture_calls[0]["metadata"]["adaptive_source_duplicate_search"]["completed"] is True
+    assert context.metadata["local_memory_capture_result"]["record_id"] == "cand-1"
     assert context.final_content != "search incomplete"
     search_calls = [params for name, params in tools.calls if name == "mcp_local_memory_memory_search"]
     assert len(search_calls) >= 4
@@ -594,7 +596,7 @@ async def test_adaptive_source_duplicate_search_runs_before_memory_capture(tmp_p
     assert duplicate.get("completed") is True
     steps = duplicate.get("steps")
     assert isinstance(steps, list)
-    assert any(step.get("type") == "procedure" and step.get("domain") == "operations" for step in steps)
+    assert all(not (step.get("type") == "unknown" and step.get("domain") == "unknown") for step in steps)
     plain_queries = {step.get("query") for step in steps if step.get("type") is None and step.get("domain") is None}
     assert any(query and query.startswith("Remember this procedure: use focused tests only") for query in plain_queries)
     assert any(query and query.startswith("Use focused tests only and avoid broad reruns unless required.") for query in plain_queries)

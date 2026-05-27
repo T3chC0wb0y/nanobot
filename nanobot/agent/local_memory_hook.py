@@ -59,7 +59,7 @@ class LocalMemoryHook(AgentHook):
             record_authoritative_source_check(context.metadata, "mcp", True)
         if source_decision.duplicate_search_required:
             request = build_capture_request(user_text, context.final_content or user_text, self._config)
-            aliases = request.tags if request else []
+            aliases = [*source_decision.duplicate_search_terms, *(request.tags if request else [])]
             duplicate_result = await run_duplicate_memory_search(
                 tools,
                 self._config,
@@ -182,7 +182,7 @@ class LocalMemoryHook(AgentHook):
                     and step.get("domain") == request.domain
                     for step in steps
                 )
-                if not has_typed_coverage:
+                if request.type != "unknown" and request.domain != "unknown" and not has_typed_coverage:
                     duplicate["steps"] = [
                         *steps,
                         {

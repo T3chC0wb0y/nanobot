@@ -158,8 +158,11 @@ class LocalMemoryInjection:
 
 @dataclass(slots=True)
 class LocalMemoryCaptureRequest:
-    type: str = "procedure"
-    domain: str = "operations"
+    # These are intentionally weak hints. The local-memory MCP server owns
+    # canonical capture shaping/normalization, so Nanobot should not try to be
+    # authoritative about classification.
+    type: str = "unknown"
+    domain: str = "unknown"
     title: str = ""
     summary: str = ""
     content: str = ""
@@ -397,9 +400,14 @@ async def run_duplicate_memory_search(
     await _do_search(concept_query)
     for alias in normalized_aliases:
         await _do_search(alias)
-    type_filter = source_type if source_type else None
-    domain_filter = domain if domain else None
-    await _do_search(concept_query, type_filter=type_filter, domain_filter=domain_filter)
+    # Capture shaping now happens on the local-memory MCP server. Nanobot's
+    # source_type/domain values are only hints and may be reshaped, so only use
+    # typed duplicate coverage when the hint is specific. Broad/exact searches
+    # above remain the continuity gate.
+    type_filter = _specific_search_filter(source_type)
+    domain_filter = _specific_search_filter(domain)
+    if type_filter or domain_filter:
+        await _do_search(concept_query, type_filter=type_filter, domain_filter=domain_filter)
 
     return {
         "completed": True,
@@ -413,7 +421,10 @@ def ensure_duplicate_memory_search_completed(metadata: dict[str, Any]) -> None:
     if not isinstance(duplicate, dict) or duplicate.get("completed") is not True:
         raise DuplicateMemorySearchRequiredError("search incomplete")
     executed_queries = duplicate.get("queries")
-    if not isinstance(executed_queries, list) or len(executed_queries) < 4:
+    if not isinstance(executed_queries, list) or len(executed_queries) < 1:
+        raise DuplicateMemorySearchRequiredError("search incomplete")
+    steps = duplicate.get("steps")
+    if not isinstance(steps, list) or not steps:
         raise DuplicateMemorySearchRequiredError("search incomplete")
 
 
@@ -520,13 +531,15 @@ def build_capture_request(
         return None
     if len(clean) > cfg.max_candidate_chars:
         clean = clean[: cfg.max_candidate_chars].rstrip() + "..."
+    metadata = _capture_request_metadata(user_text)
     return LocalMemoryCaptureRequest(
-        type=_derive_type(user_text, clean),
-        domain=_derive_domain(user_text, clean),
+        type=_derive_type_hint(user_text, clean),
+        domain=_derive_domain_hint(user_text, clean),
         title=_derive_title(user_text, clean),
         summary=_first_sentence(clean),
         content=clean,
         tags=_derive_tags(user_text, clean),
+        metadata=metadata,
     )
 
 
@@ -542,6 +555,12 @@ async def capture_candidate(
     tool_name = f"mcp_{cfg.server_name}_memory_capture_candidate"
     if not tool_registry.has(tool_name):
         return None
+    request_metadata = dict(request.metadata)
+    request_metadata.setdefault("captured_by", "nanobot")
+    request_metadata.setdefault("capture_trigger", "explicit_user_request")
+    if metadata is not None:
+        request_metadata.setdefault("adaptive_source_decision", metadata.get("adaptive_source_decision"))
+        request_metadata.setdefault("adaptive_source_duplicate_search", metadata.get("adaptive_source_duplicate_search"))
     payload = {
         "type": request.type,
         "domain": request.domain,
@@ -549,15 +568,20 @@ async def capture_candidate(
         "summary": request.summary,
         "content": request.content,
         "tags": request.tags,
-        "metadata": request.metadata,
+        "metadata": request_metadata,
         "record_id": request.record_id,
     }
     try:
         result = await tool_registry.execute(tool_name, payload)
-    except Exception:
+    except Exception as exc:
+        if metadata is not None:
+            metadata["local_memory_capture_error"] = str(exc)
         logger.exception("Local memory candidate capture failed")
         return None
-    return _coerce_dict(result)
+    captured = _coerce_dict(result)
+    if metadata is not None:
+        metadata["local_memory_capture_result"] = captured
+    return captured
 
 
 def is_risky_local_action(text: str) -> bool:
@@ -779,7 +803,7 @@ def _first_sentence(text: str) -> str:
     return stripped[:160].strip()
 
 
-def _derive_type(user_text: str, assistant_text: str) -> str:
+def _derive_type_hint(user_text: str, assistant_text: str) -> str:
     lowered = f"{user_text} {assistant_text}".lower()
     if any(token in lowered for token in ("procedure", "runbook", "steps", "pytest path", "focused tests")):
         return "procedure"
@@ -787,16 +811,16 @@ def _derive_type(user_text: str, assistant_text: str) -> str:
         return "policy"
     if "prefer" in lowered or "preference" in lowered:
         return "preference"
-    return "procedure"
+    return "unknown"
 
 
-def _derive_domain(user_text: str, assistant_text: str) -> str:
+def _derive_domain_hint(user_text: str, assistant_text: str) -> str:
     lowered = f"{user_text} {assistant_text}".lower()
     if any(token in lowered for token in ("repo", "git", "code", "project")):
         return "project"
     if any(token in lowered for token in ("nanobot", "mcp", "runbook", "service", "workflow")):
         return "nanobot"
-    return "operations"
+    return "unknown"
 
 
 def _derive_title(user_text: str, assistant_text: str) -> str:
@@ -808,10 +832,26 @@ def _derive_title(user_text: str, assistant_text: str) -> str:
 def _derive_tags(user_text: str, assistant_text: str) -> list[str]:
     lowered = f"{user_text} {assistant_text}".lower()
     tags: list[str] = []
-    for token in ("nanobot", "mcp", "runbook", "repo", "git", "policy", "preference", "procedure"):
+    for token in ("nanobot", "mcp", "runbook", "repo", "git", "policy", "preference", "procedure", "continuity"):
         if token in lowered and token not in tags:
             tags.append(token)
     return tags
+
+
+def _capture_request_metadata(user_text: str) -> dict[str, Any]:
+    return {
+        "captured_by": "nanobot",
+        "capture_trigger": "explicit_user_request",
+        "source_user_text": " ".join((user_text or "").split())[:500],
+        "server_shapes_capture": True,
+    }
+
+
+def _specific_search_filter(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    if not normalized or normalized.lower() == "unknown":
+        return None
+    return normalized
 
 
 def _looks_like_memory_write_request(lowered: str) -> bool:
