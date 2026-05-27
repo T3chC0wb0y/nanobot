@@ -11,6 +11,8 @@ from nanobot.agent.local_memory import (
     MemoryCreationBlockedError,
     RiskyActionBlockedError,
     capture_candidate,
+    classify_adaptive_source_need,
+    infer_evidence_need,
 )
 from nanobot.agent.local_memory_hook import LocalMemoryHook
 from nanobot.providers.base import ToolCallRequest
@@ -38,6 +40,38 @@ def _config(tmp_path) -> LocalMemoryConfig:
         trace_path=tmp_path / "memory-recall-trace.jsonl",
         min_query_length=1,
     )
+
+
+def test_stable_reference_questions_orient_to_mcp() -> None:
+    evidence = infer_evidence_need("Where is the canonical operating reference kept?")
+    decision = classify_adaptive_source_need("Where is the canonical operating reference kept?")
+
+    assert evidence.primary_source == "mcp"
+    assert evidence.reason == "stable_reference_orientation"
+    assert evidence.needs_orientation is True
+    assert decision.source_type == "mcp"
+
+
+def test_current_state_questions_use_live_source() -> None:
+    decision = classify_adaptive_source_need("Is the gateway running right now?")
+
+    assert decision.source_type == "live"
+    assert decision.reason == "current_runtime_live_state"
+
+
+def test_code_behavior_questions_use_code_source() -> None:
+    decision = classify_adaptive_source_need("How is local memory recall implemented?")
+
+    assert decision.source_type == "code"
+    assert decision.reason == "current_implementation"
+
+
+def test_documented_procedure_uses_runbook_with_orientation() -> None:
+    decision = classify_adaptive_source_need("What is the documented restart procedure?")
+
+    assert decision.source_type == "runbook"
+    assert decision.reason == "maintained_procedure"
+    assert decision.pointer_only_mcp is True
 
 
 @pytest.mark.asyncio

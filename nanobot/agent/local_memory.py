@@ -17,7 +17,6 @@ from loguru import logger
 
 from nanobot.agent.tools.registry import ToolRegistry
 
-
 _LOCAL_MEMORY_SERVER_NAME = "local_memory"
 _DEFAULT_TRACE_PATH = Path("~/.nanobot/logs/memory-recall-trace.jsonl").expanduser()
 _RISKY_COMMAND_PATTERN = re.compile(
@@ -187,6 +186,16 @@ class AdaptiveSourceDecision:
     duplicate_search_terms: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class EvidenceNeed:
+    primary_source: Literal["mcp", "runbook", "code", "live", "user_md"]
+    reason: str
+    needs_orientation: bool = False
+    needs_current_verification: bool = False
+    needs_implementation_proof: bool = False
+    needs_procedure_doc: bool = False
+
+
 class RiskyActionBlockedError(RuntimeError):
     """Raised when a risky local action lacks approved memory guidance."""
 
@@ -233,7 +242,17 @@ def classify_recall_need(user_text: str, cfg: LocalMemoryConfig) -> RecallDecisi
             filters=_recall_filters("operations"),
             risky=True,
         )
+    evidence = infer_evidence_need(text)
     query_kind = _classify_memory_query(text)
+    if evidence.primary_source == "mcp" or evidence.needs_orientation:
+        recall_kind = _recall_kind_for_evidence(text, evidence, query_kind)
+        if query_kind is not None or evidence.needs_orientation:
+            return RecallDecision(
+                True,
+                f"evidence:{evidence.reason}",
+                _build_context_query(text, recall_kind),
+                filters=_recall_filters(recall_kind),
+            )
     if query_kind is not None:
         return RecallDecision(
             True,
@@ -263,15 +282,40 @@ def classify_adaptive_source_need(user_text: str) -> AdaptiveSourceDecision:
             duplicate_search_required=True,
             duplicate_search_terms=_build_duplicate_search_terms(text),
         )
-    if _looks_like_user_identity_request(lowered):
-        return AdaptiveSourceDecision("user_md", "stable_identity_preferences")
-    if _looks_like_live_state_request(lowered):
-        return AdaptiveSourceDecision("live", "current_runtime_live_state")
-    if _looks_like_code_request(lowered):
-        return AdaptiveSourceDecision("code", "current_implementation")
-    if _looks_like_runbook_request(lowered):
-        return AdaptiveSourceDecision("runbook", "maintained_procedure", pointer_only_mcp=True)
-    return AdaptiveSourceDecision("mcp", "continuity_orientation")
+
+    evidence = infer_evidence_need(text)
+    return AdaptiveSourceDecision(
+        evidence.primary_source,
+        evidence.reason,
+        pointer_only_mcp=evidence.needs_orientation and evidence.primary_source == "runbook",
+    )
+
+
+def infer_evidence_need(user_text: str) -> EvidenceNeed:
+    """Infer the evidence class required to support a request.
+
+    This deliberately classifies the kind of proof needed instead of matching
+    one-off requests.  MCP is the orientation layer for stable references,
+    canonical pointers, preferences, and prior decisions; proving sources are
+    selected only when the request depends on current runtime state, current
+    implementation, maintained procedure text, or stable USER.md identity.
+    """
+    text = (user_text or "").strip()
+    lowered = text.lower()
+    if not text:
+        return EvidenceNeed("mcp", "empty")
+
+    if _needs_user_profile_evidence(lowered):
+        return EvidenceNeed("user_md", "stable_identity_preferences")
+    if _needs_live_state_evidence(lowered):
+        return EvidenceNeed("live", "current_runtime_live_state", needs_current_verification=True)
+    if _needs_code_evidence(lowered):
+        return EvidenceNeed("code", "current_implementation", needs_implementation_proof=True)
+    if _needs_stable_reference_orientation(lowered):
+        return EvidenceNeed("mcp", "stable_reference_orientation", needs_orientation=True)
+    if _needs_maintained_procedure_evidence(lowered):
+        return EvidenceNeed("runbook", "maintained_procedure", needs_orientation=True, needs_procedure_doc=True)
+    return EvidenceNeed("mcp", "continuity_orientation")
 
 
 async def search_local_memory(
@@ -812,6 +856,119 @@ def _derive_tags(user_text: str, assistant_text: str) -> list[str]:
         if token in lowered and token not in tags:
             tags.append(token)
     return tags
+
+
+def _recall_kind_for_evidence(text: str, evidence: EvidenceNeed, classified: str | None = None) -> str:
+    if classified is None:
+        classified = _classify_memory_query(text)
+    if classified is not None:
+        return classified
+    lowered = text.lower()
+    if evidence.primary_source == "user_md":
+        return "preferences"
+    if _needs_stable_reference_orientation(lowered) or _needs_maintained_procedure_evidence(lowered):
+        return "operations"
+    return "project"
+
+
+def _needs_user_profile_evidence(lowered: str) -> bool:
+    return "user.md" in lowered or any(phrase in lowered for phrase in (
+        "my preference",
+        "my preferences",
+        "call me",
+        "who am i",
+        "stable preference",
+        "stable identity",
+    ))
+
+
+def _needs_live_state_evidence(lowered: str) -> bool:
+    state_terms = (
+        "running",
+        "status",
+        "health",
+        "active process",
+        "port open",
+        "service up",
+        "system state",
+        "runtime",
+        "live state",
+    )
+    temporal_terms = ("currently", "right now", "now", "live", "active")
+    return any(term in lowered for term in state_terms) and (
+        any(term in lowered for term in temporal_terms)
+        or any(term in lowered for term in ("status", "health", "running", "service up", "active process"))
+    )
+
+
+def _needs_code_evidence(lowered: str) -> bool:
+    implementation_terms = (
+        "implement",
+        "implementation",
+        "function",
+        "class",
+        "method",
+        "in the code",
+        "code path",
+        "patch",
+        "edit file",
+        "refactor",
+        "test",
+        "read the code",
+    )
+    return any(term in lowered for term in implementation_terms)
+
+
+def _needs_stable_reference_orientation(lowered: str) -> bool:
+    reference_terms = (
+        "canonical",
+        "pointer",
+        "reference",
+        "where",
+        "location",
+        "path",
+        "kept",
+        "located",
+        "find",
+        "stored",
+        "remembered",
+        "prior decision",
+        "previous decision",
+        "agreed",
+    )
+    durable_context_terms = (
+        "runbook",
+        "workflow",
+        "procedure",
+        "config",
+        "repository",
+        "repo",
+        "branch",
+        "service",
+        "tooling",
+        "operating reference",
+        "system reference",
+    )
+    asks_for_pointer = any(term in lowered for term in reference_terms)
+    has_durable_target = any(term in lowered for term in durable_context_terms)
+    return asks_for_pointer and has_durable_target
+
+
+def _needs_maintained_procedure_evidence(lowered: str) -> bool:
+    procedure_terms = (
+        "documented procedure",
+        "maintained procedure",
+        "official procedure",
+        "runbook procedure",
+        "runbook workflow",
+        "docs",
+        "documentation",
+        "playbook",
+        "checklist",
+        "workflow",
+        "procedure",
+    )
+    return any(term in lowered for term in procedure_terms)
 
 
 def _looks_like_memory_write_request(lowered: str) -> bool:
