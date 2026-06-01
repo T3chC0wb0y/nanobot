@@ -1057,7 +1057,7 @@ class AgentLoop:
         )
         wall_done = time.time()
         latency_ms = max(0, int((wall_done - t_wall) * 1000))
-        self._save_turn(session, all_msgs, 1 + len(history), turn_latency_ms=latency_ms)
+        self._save_turn(session, all_msgs, 2 + len(history), turn_latency_ms=latency_ms)
         if channel == "websocket":
             self._pending_turn_latency_ms[key] = latency_ms
         session.enforce_file_cap(on_archive=self.context.memory.raw_archive)
@@ -1366,11 +1366,17 @@ class AgentLoop:
         if ctx.final_content is None or not ctx.final_content.strip():
             ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
-        ctx.save_skip = 1 + len(ctx.history) + (1 if ctx.user_persisted_early else 0)
+        ctx.save_skip = 2 + len(ctx.history) + (1 if ctx.user_persisted_early else 0)
+        # Tests and custom loop stubs may still return a pre-runtime-context
+        # transcript shape.  Preserve at least the final assistant message when
+        # the computed prompt-prefix skip would otherwise skip the whole turn.
+        save_skip = ctx.save_skip
+        if ctx.user_persisted_early and save_skip >= len(ctx.all_messages) and ctx.all_messages:
+            save_skip = len(ctx.all_messages) - 1
 
         ctx.turn_latency_ms = max(0, int((time.time() - ctx.turn_wall_started_at) * 1000))
         self._save_turn(
-            ctx.session, ctx.all_messages, ctx.save_skip,
+            ctx.session, ctx.all_messages, save_skip,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.msg.channel == "websocket":

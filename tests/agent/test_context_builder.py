@@ -309,16 +309,22 @@ class TestBuildMessages:
     def test_basic_empty_history(self, tmp_path):
         builder = _builder(tmp_path)
         messages = builder.build_messages([], "hello")
-        assert len(messages) == 2
+        assert len(messages) == 3
         assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
-        assert "hello" in str(messages[1]["content"])
+        assert messages[1]["role"] == "system"
+        assert messages[1]["content"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG)
+        assert messages[2]["role"] == "user"
+        assert "hello" in str(messages[2]["content"])
 
     def test_runtime_context_injected(self, tmp_path):
         builder = _builder(tmp_path)
         messages = builder.build_messages([], "hello", channel="cli", chat_id="direct")
+        runtime_msg = str(messages[-2]["content"])
         user_msg = str(messages[-1]["content"])
-        assert "[Runtime Context" in user_msg
+        assert "[Runtime Context" in runtime_msg
+        assert "Channel: cli" in runtime_msg
+        assert "Chat ID: direct" in runtime_msg
+        assert "[Runtime Context" not in user_msg
         assert "hello" in user_msg
 
     def test_session_metadata_injects_active_goal_state(self, tmp_path):
@@ -333,9 +339,11 @@ class TestBuildMessages:
             chat_id="x",
             session_metadata=meta,
         )
+        runtime_msg = str(messages[-2]["content"])
         user_msg = str(messages[-1]["content"])
-        assert "Goal (active):" in user_msg
-        assert "Finish docs migration." in user_msg
+        assert "Goal (active):" in runtime_msg
+        assert "Finish docs migration." in runtime_msg
+        assert "Goal (active):" not in user_msg
 
     def test_goal_state_does_not_leak_without_session_metadata(self, tmp_path):
         builder = _builder(tmp_path)
@@ -358,9 +366,11 @@ class TestBuildMessages:
             session_metadata={},
         )
 
-        assert "Other chat goal." in str(with_goal[-1]["content"])
+        assert "Other chat goal." in str(with_goal[-2]["content"])
+        assert "Other chat goal." not in str(with_goal[-1]["content"])
+        assert "Other chat goal." not in str(without_goal[-2]["content"])
         assert "Other chat goal." not in str(without_goal[-1]["content"])
-        assert "Goal (active):" not in str(without_goal[-1]["content"])
+        assert "Goal (active):" not in str(without_goal[-2]["content"])
 
     def test_current_runtime_lines_are_injected(self, tmp_path):
         builder = _builder(tmp_path)
@@ -371,25 +381,31 @@ class TestBuildMessages:
                 "CLI App Attachment: @zoom (installed; tool=run_cli_app; entry_point=cli-anything-zoom).",
             ],
         )
+        runtime_msg = str(messages[-2]["content"])
         user_msg = str(messages[-1]["content"])
 
-        assert "CLI App Attachment: @zoom" in user_msg
-        assert "tool=run_cli_app" in user_msg
-        assert "entry_point=cli-anything-zoom" in user_msg
+        assert "CLI App Attachment: @zoom" in runtime_msg
+        assert "tool=run_cli_app" in runtime_msg
+        assert "entry_point=cli-anything-zoom" in runtime_msg
+        assert "CLI App Attachment: @zoom" not in user_msg
 
     def test_consecutive_same_role_merged(self, tmp_path):
         builder = _builder(tmp_path)
         history = [{"role": "user", "content": "previous user message"}]
         messages = builder.build_messages(history, "new message")
-        assert len(messages) == 2  # system + merged user
+        assert len(messages) == 4  # system + history + runtime context + new user
+        assert messages[-2]["role"] == "system"
+        assert messages[-2]["content"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG)
         assert "previous user message" in str(messages[1]["content"])
-        assert "new message" in str(messages[1]["content"])
+        assert "new message" in str(messages[-1]["content"])
 
     def test_different_role_appended(self, tmp_path):
         builder = _builder(tmp_path)
         history = [{"role": "assistant", "content": "previous response"}]
         messages = builder.build_messages(history, "new message")
-        assert len(messages) == 3  # system + assistant + user
+        assert len(messages) == 4  # system + assistant + runtime context + user
+        assert messages[-2]["role"] == "system"
+        assert messages[-2]["content"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG)
 
     def test_media_with_history(self, tmp_path):
         png = tmp_path / "img.png"
