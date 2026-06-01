@@ -16,7 +16,7 @@ def test_candidate_promote_search_and_deprecate(tmp_path):
 
     assert record.status == "candidate"
     assert record.type == "resolution_pattern"
-    assert record.domain == "microsoft_365"
+    assert record.domain == "operations"
     assert record.metadata["capture_shaped_by"] == "local-memory-mcp"
     assert store.search("shared mailbox") == []
 
@@ -24,7 +24,7 @@ def test_candidate_promote_search_and_deprecate(tmp_path):
     assert promoted.status == "promoted"
     assert promoted.metadata["promoted_by"] == "Bob"
 
-    results = store.search("shared mailbox", domain="microsoft_365")
+    results = store.search("shared mailbox", domain="operations")
     assert len(results) == 1
     assert results[0]["id"] == record.id
 
@@ -169,6 +169,7 @@ def test_search_supports_multiple_domains_and_types(tmp_path):
     )
     multi_domain_ids = {result["id"] for result in multi_domain_results}
     assert multi_domain_ids == {"engineering-preference", "operations-procedure"}
+    assert {result["domain"] for result in multi_domain_results} == {"project", "operations"}
 
     compatibility_results = store.search(
         "verify branch",

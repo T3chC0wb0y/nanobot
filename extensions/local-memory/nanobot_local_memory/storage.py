@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .capture_shaping import shape_capture_candidate
+from .domains import normalize_domain, normalize_domain_filters
 from .schema import MemoryRecord, utc_now_iso
 
 
@@ -226,9 +227,10 @@ class SQLiteMemoryStore:
         if status:
             clauses.append("status=?")
             params.append(status)
-        if domain:
+        normalized_domain = normalize_domain(domain)
+        if normalized_domain:
             clauses.append("domain=?")
-            params.append(domain)
+            params.append(normalized_domain)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
             rows = conn.execute(
@@ -258,7 +260,7 @@ class SQLiteMemoryStore:
             statuses.append("candidate")
         if include_deprecated:
             statuses.append("deprecated")
-        normalized_domains = self._normalize_filters(domain, domains)
+        normalized_domains = normalize_domain_filters(domain, domains)
         normalized_types = self._normalize_filters(record_type, record_types)
 
         try:

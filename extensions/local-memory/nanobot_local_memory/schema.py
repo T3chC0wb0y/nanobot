@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .domains import CANONICAL_DOMAINS
+
 
 VALID_STATUSES = {"candidate", "promoted", "deprecated"}
 
@@ -35,6 +37,9 @@ class MemoryRecord:
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"Memory record field {field_name!r} is required")
+        if self.domain not in CANONICAL_DOMAINS:
+            valid = ", ".join(sorted(CANONICAL_DOMAINS))
+            raise ValueError(f"Invalid memory domain: {self.domain!r}; expected one of: {valid}")
         if not isinstance(self.tags, list) or not all(isinstance(tag, str) for tag in self.tags):
             raise ValueError("Memory tags must be a list of strings")
         if not isinstance(self.metadata, dict):

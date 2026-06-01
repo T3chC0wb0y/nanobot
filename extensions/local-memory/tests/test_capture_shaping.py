@@ -36,9 +36,9 @@ def test_shape_capture_candidate_infers_type_and_domain_for_local_memory_overlay
     )
 
     assert shaped.record_type == "project"
-    assert shaped.domain == "local-memory"
+    assert shaped.domain == "memory"
     assert shaped.title.startswith("The local-memory MCP repo owns")
-    assert {"project", "local-memory", "mcp", "nanobot", "overlay"}.issubset(set(shaped.tags))
+    assert {"project", "memory", "local-memory", "mcp", "nanobot", "overlay"}.issubset(set(shaped.tags))
 
 
 def test_shape_capture_candidate_rejects_secrets() -> None:

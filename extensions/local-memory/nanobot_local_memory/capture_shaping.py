@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .domains import normalize_domain
+
 
 _UNKNOWN_HINTS = {"", "unknown", "none", "null", "n/a"}
 _FIELD_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
@@ -54,7 +56,7 @@ def shape_capture_candidate(
     combined = " ".join(part for part in (clean_title, clean_summary, clean_content) if part)
 
     clean_type = _normalize_type(record_type) or _infer_type(combined)
-    clean_domain = _normalize_domain(domain) or _infer_domain(combined)
+    clean_domain = normalize_domain(domain) or _infer_domain(combined)
     clean_tags = _shape_tags(tags, combined, clean_type, clean_domain)
     clean_metadata = dict(metadata or {})
     clean_metadata.setdefault("capture_shaped_by", "local-memory-mcp")
@@ -109,21 +111,6 @@ def _normalize_type(record_type: str | None) -> str | None:
     return value if _FIELD_PATTERN.match(value) else None
 
 
-def _normalize_domain(domain: str | None) -> str | None:
-    value = re.sub(r"\s+", "-", (domain or "").strip().lower())
-    aliases = {
-        "ops": "operations",
-        "operation": "operations",
-        "memory": "local-memory",
-        "local-memory-mcp": "local-memory",
-        "user": "personal",
-    }
-    value = aliases.get(value, value)
-    if value in _UNKNOWN_HINTS:
-        return None
-    return value if _FIELD_PATTERN.match(value) else None
-
-
 def _infer_type(text: str) -> str:
     lowered = text.lower()
     if any(token in lowered for token in ("prefer", "preference", "usually", "style", "tone", "call me")):
@@ -140,13 +127,13 @@ def _infer_type(text: str) -> str:
 def _infer_domain(text: str) -> str:
     lowered = text.lower()
     if any(token in lowered for token in ("local-memory", "local memory", "mcp memory", "memory_capture")):
-        return "local-memory"
-    if any(token in lowered for token in ("nanobot", "agentloop", "agent loop", "listener")):
-        return "nanobot"
-    if any(token in lowered for token in ("repo", "branch", "commit", "pytest", "code", "implementation")):
+        return "memory"
+    if any(token in lowered for token in ("preference", "call me", "my ", "i prefer", "identity")):
+        return "identity"
+    if any(token in lowered for token in ("workspace", "worktree", "working copy", "checkout", "overlay")):
+        return "workspace"
+    if any(token in lowered for token in ("nanobot", "agentloop", "agent loop", "listener", "repo", "branch", "commit", "pytest", "code", "implementation")):
         return "project"
-    if any(token in lowered for token in ("preference", "call me", "my ")):
-        return "personal"
     return "operations"
 
 
