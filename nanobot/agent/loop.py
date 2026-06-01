@@ -153,6 +153,7 @@ class AgentLoop:
         (TurnState.COMPACT, "ok"): TurnState.COMMAND,
         (TurnState.COMMAND, "dispatch"): TurnState.BUILD,
         (TurnState.COMMAND, "shortcut"): TurnState.DONE,
+        (TurnState.BUILD, "shortcut"): TurnState.DONE,
         (TurnState.BUILD, "ok"): TurnState.RUN,
         (TurnState.RUN, "ok"): TurnState.SAVE,
         (TurnState.SAVE, "ok"): TurnState.RESPOND,
@@ -1290,6 +1291,7 @@ class AgentLoop:
         if isinstance(ctx.msg.content, str):
             identity_answer = answer_identity_question(self.workspace, ctx.msg.content)
         if identity_answer is not None:
+            ctx.user_persisted_early = self._persist_user_message_early(ctx.msg, ctx.session)
             ctx.session.add_message("assistant", identity_answer)
             self._clear_pending_user_turn(ctx.session)
             self._clear_runtime_checkpoint(ctx.session)
@@ -1307,6 +1309,7 @@ class AgentLoop:
         if isinstance(ctx.msg.content, str):
             assistant_identity_answer = answer_assistant_identity_question(self.workspace, ctx.msg.content)
         if assistant_identity_answer is not None:
+            ctx.user_persisted_early = self._persist_user_message_early(ctx.msg, ctx.session)
             ctx.session.add_message("assistant", assistant_identity_answer)
             self._clear_pending_user_turn(ctx.session)
             self._clear_runtime_checkpoint(ctx.session)
