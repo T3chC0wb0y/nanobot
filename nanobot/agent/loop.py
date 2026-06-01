@@ -1320,7 +1320,6 @@ class AgentLoop:
             )
             return "shortcut"
 
-        )
 
         ctx.initial_messages = self._build_initial_messages(
             ctx.msg, ctx.session, ctx.history, ctx.pending_summary
