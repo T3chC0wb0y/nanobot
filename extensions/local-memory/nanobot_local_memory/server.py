@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .domains import CANONICAL_MEMORY_DOMAINS, DOMAIN_ALIASES
 from .storage import SQLiteMemoryStore, default_database_path
 
 
@@ -53,6 +54,7 @@ def create_mcp_server():
     def search(
         query: str,
         domain: str | None = None,
+        domains: list[str] | None = None,
         type: str | None = None,
         include_candidates: bool = False,
         include_deprecated: bool = False,
@@ -61,6 +63,7 @@ def create_mcp_server():
         results = get_store().search(
             query,
             domain=domain,
+            domains=domains,
             record_type=type,
             include_candidates=include_candidates,
             include_deprecated=include_deprecated,
@@ -72,6 +75,7 @@ def create_mcp_server():
     def build_context(
         query: str,
         domain: str | None = None,
+        domains: list[str] | None = None,
         type: str | None = None,
         include_candidates: bool = False,
         include_deprecated: bool = False,
@@ -81,6 +85,7 @@ def create_mcp_server():
         results = get_store().search(
             query,
             domain=domain,
+            domains=domains,
             record_type=type,
             include_candidates=include_candidates,
             include_deprecated=include_deprecated,
@@ -102,6 +107,10 @@ def create_mcp_server():
             if remaining <= 0:
                 break
         return {"ok": True, "count": len(results), "results": results, "context": "\n".join(compact)}
+
+    @mcp.tool(name="memory_domains")
+    def domains() -> dict[str, Any]:
+        return {"ok": True, "domains": list(CANONICAL_MEMORY_DOMAINS), "aliases": dict(DOMAIN_ALIASES)}
 
     @mcp.tool(name="memory_get")
     def get(record_id: str) -> dict[str, Any]:

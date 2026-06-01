@@ -125,3 +125,39 @@ def test_search_inclusion_flags_for_candidates_and_deprecated(tmp_path):
     assert default_ids == {promoted.id}
     assert candidate_ids == {candidate.id, promoted.id}
     assert all_ids == {candidate.id, promoted.id, deprecated.id}
+
+
+def test_fixed_domain_taxonomy_normalizes_aliases(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+
+    record = store.capture_candidate(
+        record_id="alias-record",
+        record_type="procedure",
+        domain="nanobot",
+        title="Nanobot workflow",
+        summary="Workflow for Nanobot maintenance.",
+        content="Use the repository workflow for Nanobot maintenance.",
+    )
+    store.promote(record.id, promoted_by="reviewer")
+
+    assert record.domain == "project"
+    assert store.get("alias-record").domain == "project"
+    assert [result["id"] for result in store.search("workflow", domain="nanobot")] == ["alias-record"]
+    assert [result["id"] for result in store.search("workflow", domains=["engineering"])] == ["alias-record"]
+
+
+def test_fixed_domain_taxonomy_rejects_unknown_domains(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+
+    try:
+        store.capture_candidate(
+            record_type="procedure",
+            domain="unknown-domain",
+            title="Unknown",
+            summary="Unknown domain should fail.",
+            content="Unknown domain should fail.",
+        )
+    except ValueError as exc:
+        assert "Invalid memory domain" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for unknown memory domain")

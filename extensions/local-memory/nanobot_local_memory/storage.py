@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
+from .domains import normalize_domains, validate_domain
 from .schema import MemoryRecord, utc_now_iso
 
 
@@ -220,7 +221,7 @@ class SQLiteMemoryStore:
             params.append(status)
         if domain:
             clauses.append("domain=?")
-            params.append(domain)
+            params.append(validate_domain(domain))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
             rows = conn.execute(
@@ -234,6 +235,7 @@ class SQLiteMemoryStore:
         query: str,
         *,
         domain: str | None = None,
+        domains: Iterable[str] | None = None,
         record_type: str | None = None,
         include_candidates: bool = False,
         include_deprecated: bool = False,
@@ -248,12 +250,13 @@ class SQLiteMemoryStore:
             statuses.append("candidate")
         if include_deprecated:
             statuses.append("deprecated")
+        domain_filters = normalize_domains([domain] if domain else domains)
 
         try:
             return self._fts_search(
                 query,
                 statuses=statuses,
-                domain=domain,
+                domains=domain_filters,
                 record_type=record_type,
                 limit=limit,
             )
@@ -261,7 +264,7 @@ class SQLiteMemoryStore:
             return self._like_search(
                 query,
                 statuses=statuses,
-                domain=domain,
+                domains=domain_filters,
                 record_type=record_type,
                 limit=limit,
             )
@@ -271,15 +274,15 @@ class SQLiteMemoryStore:
         query: str,
         *,
         statuses: list[str],
-        domain: str | None,
+        domains: list[str],
         record_type: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
         clauses = [f"r.status IN ({','.join('?' for _ in statuses)})", "f.memory_records_fts MATCH ?"]
         params: list[Any] = [*statuses, self._fts_query(query)]
-        if domain:
-            clauses.append("r.domain=?")
-            params.append(domain)
+        if domains:
+            clauses.append(f"r.domain IN ({','.join('?' for _ in domains)})")
+            params.extend(domains)
         if record_type:
             clauses.append("r.type=?")
             params.append(record_type)
@@ -300,7 +303,7 @@ class SQLiteMemoryStore:
         query: str,
         *,
         statuses: list[str],
-        domain: str | None,
+        domains: list[str],
         record_type: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
@@ -309,9 +312,9 @@ class SQLiteMemoryStore:
         params: list[Any] = [*statuses]
         clauses.append("(title LIKE ? OR summary LIKE ? OR content LIKE ? OR tags_json LIKE ? OR domain LIKE ? OR type LIKE ?)")
         params.extend([like, like, like, like, like, like])
-        if domain:
-            clauses.append("domain=?")
-            params.append(domain)
+        if domains:
+            clauses.append(f"domain IN ({','.join('?' for _ in domains)})")
+            params.extend(domains)
         if record_type:
             clauses.append("type=?")
             params.append(record_type)

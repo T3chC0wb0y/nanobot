@@ -836,10 +836,14 @@ def _derive_type(user_text: str, assistant_text: str) -> str:
 
 def _derive_domain(user_text: str, assistant_text: str) -> str:
     lowered = f"{user_text} {assistant_text}".lower()
-    if any(token in lowered for token in ("repo", "git", "code", "project")):
+    if any(token in lowered for token in ("identity", "profile", "personal", "preference")):
+        return "identity"
+    if any(token in lowered for token in ("memory", "mcp memory", "local-memory", "local memory")):
+        return "memory"
+    if any(token in lowered for token in ("runbook", "workspace", "notes", "docs", "documentation")):
+        return "workspace"
+    if any(token in lowered for token in ("repo", "repository", "git", "code", "project", "nanobot")):
         return "project"
-    if any(token in lowered for token in ("nanobot", "mcp", "runbook", "service", "workflow")):
-        return "nanobot"
     return "operations"
 
 
