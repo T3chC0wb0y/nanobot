@@ -267,3 +267,24 @@ def test_local_memory_capture_mode_defaults_off() -> None:
 
     assert cfg.tools.local_memory is not None
     assert cfg.tools.local_memory.capture_mode == "off"
+
+
+def test_load_config_defaults_local_service_access_to_enabled(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"tools": {}}), encoding="utf-8")
+
+    config = load_config(config_path)
+
+    assert config.tools.webui_allow_local_service_access is True
+
+
+def test_load_config_accepts_legacy_local_preview_access(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"tools": {"allowLocalPreviewAccess": False}}),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.tools.webui_allow_local_service_access is False

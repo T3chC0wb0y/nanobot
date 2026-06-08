@@ -10,6 +10,7 @@ from nanobot.agent.memory import (
     MemoryStore,
 )
 from nanobot.session.manager import Session
+from nanobot.utils.prompt_templates import render_template
 
 
 @pytest.fixture
@@ -74,6 +75,17 @@ class TestConsolidatorSummarize:
     async def test_summarize_skips_empty_messages(self, consolidator):
         result = await consolidator.archive([])
         assert result is None
+
+
+class TestConsolidatorPromptContract:
+    def test_archive_prompt_outputs_attribute_tags_without_missing_context_claims(self):
+        prompt = render_template("agent/consolidator_archive.md", strip=True)
+
+        assert "SNIP" in prompt
+        for mark in ("[permanent]", "[durable]", "[ephemeral]", "[correction]", "[skip]"):
+            assert mark in prompt
+        assert "check context below" not in prompt.lower()
+        assert "Do not mark something [skip] merely because it might already exist" in prompt
 
 
 class TestConsolidatorArchiveErrorHandling:
@@ -439,6 +451,44 @@ class TestCompactIdleSession:
         # Should contain only tail messages, not early ones
         assert "u0" not in user_content
         assert "u25" in user_content or "a25" in user_content
+
+    @pytest.mark.asyncio
+    async def test_non_contiguous_suffix_archives_actual_dropped_messages(
+        self,
+        real_consolidator,
+        mock_provider,
+    ):
+        """Assistant-only tails retain a non-contiguous slice, so archive the
+        actual dropped messages rather than a computed prefix."""
+        mock_provider.chat_with_retry.return_value = MagicMock(
+            content="Tail summary.", finish_reason="stop"
+        )
+        sessions = real_consolidator.sessions
+        session = sessions.get_or_create("cli:noncontiguous")
+        for i in range(15):
+            session.add_message("user", f"user-{i:02d}")
+        for i in range(10):
+            session.add_message("assistant", f"assistant-{i:02d}")
+        sessions.save(session)
+
+        result = await real_consolidator.compact_idle_session("cli:noncontiguous", max_suffix=6)
+        assert result == "Tail summary."
+
+        reloaded = sessions.get_or_create("cli:noncontiguous")
+        assert [m["content"] for m in reloaded.messages] == [
+            "user-14",
+            "assistant-00",
+            "assistant-01",
+            "assistant-02",
+            "assistant-03",
+            "assistant-04",
+        ]
+
+        archived_call = mock_provider.chat_with_retry.call_args
+        user_content = archived_call.kwargs["messages"][1]["content"]
+        assert "user-14" not in user_content
+        assert "assistant-00" not in user_content
+        assert "assistant-09" in user_content
 
     @pytest.mark.asyncio
     async def test_acquires_consolidation_lock(self, real_consolidator, mock_provider):

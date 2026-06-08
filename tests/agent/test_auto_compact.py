@@ -76,10 +76,9 @@ def _make_fake_compact(
             metadata={},
             last_consolidated=0,
         )
-        probe.retain_recent_legal_suffix(max_suffix)
+        dropped, already_consolidated = probe.retain_recent_legal_suffix(max_suffix)
         kept = probe.messages
-        cut = len(tail) - len(kept)
-        archive_msgs = tail[:cut]
+        archive_msgs = dropped[already_consolidated:]
 
         if not archive_msgs and not kept:
             session.updated_at = datetime.now()
@@ -750,6 +749,27 @@ class TestProactiveAutoCompact:
         entry = loop.auto_compact._summaries.get("cli:test")
         assert entry is not None
         assert entry[0] == "User chatted about old things."
+        await loop.close_mcp()
+
+    @pytest.mark.asyncio
+    async def test_proactive_archive_skips_dream_sessions(self, tmp_path):
+        """Internal Dream sessions should be left to Dream retention, not idle compact."""
+        loop = _make_loop(tmp_path, session_ttl_minutes=15)
+        session = loop.sessions.get_or_create("dream:20260602-155256")
+        _add_turns(session, 6, prefix="dream")
+        session.updated_at = datetime.now() - timedelta(minutes=20)
+        loop.sessions.save(session)
+
+        _fake_compact = _make_fake_compact(loop)
+        loop.consolidator.compact_idle_session = _fake_compact
+
+        await self._run_check_expired(loop)
+
+        session_after = loop.sessions.get_or_create("dream:20260602-155256")
+        assert len(session_after.messages) == 12
+        assert _fake_compact.state["count"] == 0
+        assert "dream:20260602-155256" not in loop.auto_compact._archiving
+        assert "dream:20260602-155256" not in loop.auto_compact._summaries
         await loop.close_mcp()
 
     @pytest.mark.asyncio
