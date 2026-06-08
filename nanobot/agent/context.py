@@ -69,6 +69,7 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         channel: str | None = None,
         session_summary: str | None = None,
+        supplemental_sections: Sequence[str] | None = None,
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
@@ -104,6 +105,9 @@ class ContextBuilder:
 
         if session_summary:
             parts.append(f"[Archived Context Summary]\n\n{session_summary}")
+
+        if supplemental_sections:
+            parts.extend(section for section in supplemental_sections if section)
 
         return "\n\n---\n\n".join(parts)
 
@@ -230,7 +234,18 @@ class ContextBuilder:
         if current_role == "user" and isinstance(user_content, str):
             user_content = self._strip_runtime_context_wrapper(user_content)
 
-        system_prompt = self.build_system_prompt(skill_names, channel=channel, session_summary=session_summary)
+        supplemental_sections = None
+        if session_metadata:
+            sections = session_metadata.get("supplemental_sections")
+            if isinstance(sections, Sequence) and not isinstance(sections, (str, bytes)):
+                supplemental_sections = [str(section) for section in sections if section]
+
+        system_prompt = self.build_system_prompt(
+            skill_names,
+            channel=channel,
+            session_summary=session_summary,
+            supplemental_sections=supplemental_sections,
+        )
 
         messages = [
             {"role": "system", "content": system_prompt},

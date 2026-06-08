@@ -287,6 +287,14 @@ class TestBuildSystemPrompt:
         assert "Previous chat about Python." in result
         assert "[Archived Context Summary]" in result
 
+    def test_includes_supplemental_sections(self, tmp_path):
+        builder = _builder(tmp_path)
+        result = builder.build_system_prompt(
+            supplemental_sections=["# Supplemental Local Memory\n\nUse repo-safe workflow first."]
+        )
+        assert "# Supplemental Local Memory" in result
+        assert "Use repo-safe workflow first." in result
+
     def test_sections_separated_by_separator(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Rules.", encoding="utf-8")
         builder = _builder(tmp_path)
@@ -388,6 +396,27 @@ class TestBuildMessages:
         assert "tool=run_cli_app" in runtime_msg
         assert "entry_point=cli-anything-zoom" in runtime_msg
         assert "CLI App Attachment: @zoom" not in user_msg
+
+    def test_session_metadata_supplemental_sections_are_injected_into_system_prompt(self, tmp_path):
+        builder = _builder(tmp_path)
+        messages = builder.build_messages(
+            [],
+            "hello",
+            session_metadata={
+                "supplemental_sections": [
+                    "# Supplemental Local Memory\n\nUse repo-safe workflow first.",
+                ]
+            },
+        )
+
+        system_prompt = str(messages[0]["content"])
+        runtime_msg = str(messages[-2]["content"])
+        user_msg = str(messages[-1]["content"])
+
+        assert "# Supplemental Local Memory" in system_prompt
+        assert "Use repo-safe workflow first." in system_prompt
+        assert "# Supplemental Local Memory" not in runtime_msg
+        assert "# Supplemental Local Memory" not in user_msg
 
     def test_consecutive_same_role_merged(self, tmp_path):
         builder = _builder(tmp_path)
