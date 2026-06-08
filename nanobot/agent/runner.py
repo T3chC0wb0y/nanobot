@@ -1206,6 +1206,41 @@ class AgentRunner:
             offset += 1
         return updated
 
+    @classmethod
+    def _apply_supplemental_sections(
+        cls,
+        messages: list[dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Merge hook-provided supplemental context into the current model request.
+
+        Hooks run inside AgentRunner, after AgentLoop has already built the
+        initial system prompt. Supplemental sections added by hooks therefore
+        need to be merged into the model-facing message list before prompt
+        snipping, otherwise they only live in hook metadata and never reach the
+        provider on the current turn.
+        """
+        raw_sections = metadata.get(SUPPLEMENTAL_SECTIONS_KEY)
+        if not isinstance(raw_sections, (list, tuple)):
+            return messages
+
+        sections = [str(section).strip() for section in raw_sections if str(section).strip()]
+        if not sections:
+            return messages
+
+        supplemental = "\n\n".join(sections)
+        updated = [dict(message) for message in messages]
+        for message in updated:
+            if message.get("role") == "system":
+                message["content"] = cls._merge_message_content(
+                    message.get("content"),
+                    supplemental,
+                )
+                return updated
+
+        return [{"role": "system", "content": supplemental}, *updated]
+
+
     @staticmethod
     def _microcompact(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Replace old compactable tool results with one-line summaries."""
