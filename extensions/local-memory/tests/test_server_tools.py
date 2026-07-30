@@ -117,3 +117,41 @@ def test_memory_search_and_build_context_reject_invalid_domains(tmp_path, monkey
     assert context_result["count"] == 0
     assert context_result["results"] == []
     assert context_result["context"] == ""
+
+
+def test_memory_list_recent_rejects_invalid_domain(tmp_path, monkeypatch):
+    monkeypatch.setenv("NANOBOT_LOCAL_MEMORY_DB", str(tmp_path / "memory.sqlite3"))
+    server = create_mcp_server()
+
+    list_recent = _tool_fn(server, "memory_list_recent")
+
+    result = list_recent(domain="bad-domain")
+
+    assert result["ok"] is False
+    assert result["message"].startswith("query failed, search with a valid domain or domains")
+    assert result["count"] == 0
+    assert result["records"] == []
+
+
+def test_memory_list_recent_accepts_legacy_domain_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("NANOBOT_LOCAL_MEMORY_DB", str(tmp_path / "memory.sqlite3"))
+    server = create_mcp_server()
+
+    capture = _tool_fn(server, "memory_capture_candidate")
+    list_recent = _tool_fn(server, "memory_list_recent")
+
+    capture(
+        type="preference",
+        domain="engineering",
+        title="Engineering preference",
+        summary="Engineering preference summary.",
+        content="Verify branch state before changing code.",
+        record_id="engineering-preference",
+    )
+
+    result = list_recent(domain="engineering")
+
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert result["records"][0]["id"] == "engineering-preference"
+    assert result["records"][0]["domain"] == "project"
