@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .domains import DOMAIN_FILTER_ERROR, InvalidDomainFilterError
+from .domains import DOMAIN_FILTER_ERROR, InvalidDomainFilterError, normalize_domain_filters
 from .storage import SQLiteMemoryStore, default_database_path
 
 
@@ -159,7 +159,6 @@ def create_mcp_server():
         }
 
     @mcp.tool(name="memory_get")
-
     def get(record_id: str) -> dict[str, Any]:
         """Fetch one local memory record by id."""
         record = get_store().get(record_id)
@@ -168,9 +167,14 @@ def create_mcp_server():
     @mcp.tool(name="memory_list_recent")
     def list_recent(status: str | None = None, domain: str | None = None, limit: int = 10) -> dict[str, Any]:
         """List recently changed local memory records."""
+        try:
+            normalized_domains = normalize_domain_filters(domain)
+        except InvalidDomainFilterError as exc:
+            return {"ok": False, "message": str(exc) or DOMAIN_FILTER_ERROR, "count": 0, "records": []}
+        normalized_domain = normalized_domains[0] if normalized_domains else None
         records = [
             record.to_dict()
-            for record in get_store().list_recent(status=status, domain=domain, limit=limit)
+            for record in get_store().list_recent(status=status, domain=normalized_domain, limit=limit)
         ]
         return {"ok": True, "count": len(records), "records": records}
 
