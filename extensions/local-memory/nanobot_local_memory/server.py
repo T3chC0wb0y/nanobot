@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .domains import DOMAIN_FILTER_ERROR, InvalidDomainFilterError
 from .storage import SQLiteMemoryStore, default_database_path
 
 
@@ -94,16 +95,19 @@ def create_mcp_server():
         limit: int = 8,
     ) -> dict[str, Any]:
         """Search durable local memory. Promoted records are searched by default."""
-        results = get_store().search(
-            query,
-            domain=domain,
-            domains=domains,
-            record_type=type,
-            record_types=types,
-            include_candidates=include_candidates,
-            include_deprecated=include_deprecated,
-            limit=limit,
-        )
+        try:
+            results = get_store().search(
+                query,
+                domain=domain,
+                domains=domains,
+                record_type=type,
+                record_types=types,
+                include_candidates=include_candidates,
+                include_deprecated=include_deprecated,
+                limit=limit,
+            )
+        except InvalidDomainFilterError as exc:
+            return {"ok": False, "message": str(exc) or DOMAIN_FILTER_ERROR, "count": 0, "results": []}
         return {"ok": True, "count": len(results), "results": results}
 
     @mcp.tool(name="memory_build_context")
@@ -119,16 +123,19 @@ def create_mcp_server():
         max_chars: int = 2400,
     ) -> dict[str, Any]:
         """Build a compact working-context bundle from relevant local memories."""
-        results = get_store().search(
-            query,
-            domain=domain,
-            domains=domains,
-            record_type=type,
-            record_types=types,
-            include_candidates=include_candidates,
-            include_deprecated=include_deprecated,
-            limit=limit,
-        )
+        try:
+            results = get_store().search(
+                query,
+                domain=domain,
+                domains=domains,
+                record_type=type,
+                record_types=types,
+                include_candidates=include_candidates,
+                include_deprecated=include_deprecated,
+                limit=limit,
+            )
+        except InvalidDomainFilterError as exc:
+            return {"ok": False, "message": str(exc) or DOMAIN_FILTER_ERROR, "count": 0, "results": [], "context": ""}
         compact = []
         remaining = max(200, int(max_chars))
         for item in results:

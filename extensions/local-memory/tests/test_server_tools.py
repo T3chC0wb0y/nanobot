@@ -96,3 +96,24 @@ def test_memory_search_and_build_context_support_multiple_domains_and_types(tmp_
     assert context_result["count"] == 2
     assert "Engineering preference" in context_result["context"]
     assert "Operations procedure" in context_result["context"]
+
+
+def test_memory_search_and_build_context_reject_invalid_domains(tmp_path, monkeypatch):
+    monkeypatch.setenv("NANOBOT_LOCAL_MEMORY_DB", str(tmp_path / "memory.sqlite3"))
+    server = create_mcp_server()
+
+    search = _tool_fn(server, "memory_search")
+    build_context = _tool_fn(server, "memory_build_context")
+
+    search_result = search(query="anything", domain=".")
+    assert search_result["ok"] is False
+    assert search_result["message"].startswith("query failed, search with a valid domain or domains")
+    assert search_result["count"] == 0
+    assert search_result["results"] == []
+
+    context_result = build_context(query="anything", domains=["operations", "bad-domain"])
+    assert context_result["ok"] is False
+    assert context_result["message"].startswith("query failed, search with a valid domain or domains")
+    assert context_result["count"] == 0
+    assert context_result["results"] == []
+    assert context_result["context"] == ""

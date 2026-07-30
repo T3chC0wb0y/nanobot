@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable
 
 CANONICAL_DOMAINS = frozenset({"identity", "memory", "operations", "project", "workspace"})
+DOMAIN_FILTER_ERROR = "query failed, search with a valid domain or domains"
 
 DOMAIN_ALIASES = {
     "engineering": "project",
@@ -64,22 +65,38 @@ def normalize_domain(domain: str | None) -> str | None:
     return None
 
 
+class InvalidDomainFilterError(ValueError):
+    """Raised when a search/list domain filter is outside the fixed taxonomy."""
+
+    def __init__(self, invalid_domains: Iterable[str]) -> None:
+        values = [value for value in invalid_domains if value]
+        detail = f": {', '.join(values)}" if values else ""
+        super().__init__(f"{DOMAIN_FILTER_ERROR}{detail}")
+        self.invalid_domains = values
+
+
 def normalize_domain_filters(primary: str | None = None, additional: Iterable[str] | None = None) -> list[str]:
     """Normalize search/list filters while supporting legacy domain aliases.
 
-    Unknown filter values intentionally become an impossible domain instead of
-    being dropped. A typo or unsupported historical domain must narrow to zero
-    records, not accidentally broaden recall across every canonical domain.
+    Unknown filter values are rejected loudly instead of being dropped or
+    converted to an impossible sentinel. A typo or placeholder such as ``.``
+    should fail the query with a clear message, not silently produce zero recall.
     """
 
     values: list[str] = []
+    invalid: list[str] = []
     for candidate in [primary, *(list(additional or []))]:
         text = str(candidate or "").strip()
         if not text:
             continue
-        normalized = normalize_domain(text) or "__invalid_domain__"
+        normalized = normalize_domain(text)
+        if normalized is None:
+            invalid.append(text)
+            continue
         if normalized not in values:
             values.append(normalized)
+    if invalid:
+        raise InvalidDomainFilterError(invalid)
     return values
 
 

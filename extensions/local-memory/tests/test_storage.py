@@ -189,3 +189,23 @@ def test_search_supports_multiple_domains_and_types(tmp_path):
         "engineering-preference",
         "user-policy",
     }
+
+
+def test_search_rejects_invalid_domain_filters(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+
+    try:
+        store.search("technical", domain=".")
+    except ValueError as exc:
+        assert "query failed, search with a valid domain or domains" in str(exc)
+        assert "." in str(exc)
+    else:
+        raise AssertionError("Expected invalid domain filters to fail the query")
+
+    try:
+        store.search("technical", domains=["operations", "unsupported-domain"])
+    except ValueError as exc:
+        assert "query failed, search with a valid domain or domains" in str(exc)
+        assert "unsupported-domain" in str(exc)
+    else:
+        raise AssertionError("Expected invalid domains list to fail the query")
